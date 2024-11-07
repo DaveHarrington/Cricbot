@@ -31,3 +31,16 @@ Here's a breakdown of the code:
 6. The script also defines a /invite command to get an invite link for the bot and a /help command to display information about the bot and its available commands.
 
 7. Finally, it runs the bot using your Discord token.
+
+# Setup
+
+Get a Discord token: https://discord.com/developers/applications 
+Set `DISCORD_TOKEN="<token>"` in .env
+
+Get a Rapid API token
+Set `RAPID_API_KEY="<key>" in .env
+
+```
+python -m venv .venv
+pip install -r requirements.txt
+```

@@ -1,11 +1,16 @@
+import os
 import re
 import discord
 from discord.ext import commands
 import requests
 from bs4 import BeautifulSoup
 from discord import app_commands
+from dotenv import load_dotenv
 
-token = 'bot_token'
+load_dotenv()
+
+DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
+RAPID_API_KEY = os.getenv('RAPID_API_KEY')
 data_2 = ""
 
 team_flag_mapping = {
@@ -137,7 +142,7 @@ async def live_score(interaction: discord.Interaction, team_short_name: str):
             api_url_2 = f"https://cricbuzz-cricket.p.rapidapi.com/mcenter/v1/{extracted_number}/overs"
 
             headers = {
-                "X-RapidAPI-Key": "rapid_api_key",
+                "X-RapidAPI-Key": RAPID_API_KEY,
                 "X-RapidAPI-Host": "cricbuzz-cricket.p.rapidapi.com"
             }
 
@@ -337,7 +342,7 @@ async def rankings(interaction: discord.Interaction, format: str):
     new_format = format.upper()
 
     headers = {
-        "X-RapidAPI-Key": "rapid_api_key",
+        "X-RapidAPI-Key": RAPID_API_KEY,
         "X-RapidAPI-Host": "cricbuzz-cricket.p.rapidapi.com"
     }
 
@@ -387,13 +392,13 @@ async def rankings(interaction: discord.Interaction, format: str):
 
                 await interaction.response.send_message(embed=embed)
 
-            except:
-                pass
+            except Exception as e:
+                print(e)
         else:
             pass
 
-    except:
-        pass
+    except Exception as e:
+        print(e)
 
 
 # batters_rankings
@@ -418,7 +423,7 @@ async def rankings(interaction: discord.Interaction, format: str):
     new_format = format.upper()
 
     headers = {
-        "X-RapidAPI-Key": "rapid_api_key",
+        "X-RapidAPI-Key": RAPID_API_KEY,
         "X-RapidAPI-Host": "cricbuzz-cricket.p.rapidapi.com"
     }
 
@@ -468,13 +473,13 @@ async def rankings(interaction: discord.Interaction, format: str):
 
                 await interaction.response.send_message(embed=embed)
 
-            except:
-                pass
+            except Exception as e:
+                print(e)
         else:
             pass
 
-    except:
-        pass
+    except Exception as e:
+        print(e)
 
 
 # allrounders_rankings
@@ -482,6 +487,8 @@ async def rankings(interaction: discord.Interaction, format: str):
 @bot.tree.command(name="allrounders_rankings", description="Get top 10 ICC ranked allrounders")
 @app_commands.describe(format="Game Format")
 async def rankings(interaction: discord.Interaction, format: str):
+    print("All rounder ratings...")
+
     url = "https://cricbuzz-cricket.p.rapidapi.com/stats/v1/rankings/allrounders"
 
     format = format.lower()
@@ -499,7 +506,7 @@ async def rankings(interaction: discord.Interaction, format: str):
     new_format = format.upper()
 
     headers = {
-        "X-RapidAPI-Key": "rapid_api_key",
+        "X-RapidAPI-Key": RAPID_API_KEY,
         "X-RapidAPI-Host": "cricbuzz-cricket.p.rapidapi.com"
     }
 
@@ -549,13 +556,13 @@ async def rankings(interaction: discord.Interaction, format: str):
 
                 await interaction.response.send_message(embed=embed)
 
-            except:
-                pass
+            except Exception as e:
+                print(e)
         else:
             pass
 
-    except:
-        pass
+    except Exception as e:
+        print(e)
 
 # team_rankings
 
@@ -580,7 +587,7 @@ async def rankings(interaction: discord.Interaction, format: str):
     new_format = format.upper()
 
     headers = {
-        "X-RapidAPI-Key": "rapid_api_key",
+        "X-RapidAPI-Key": RAPID_API_KEY,
         "X-RapidAPI-Host": "cricbuzz-cricket.p.rapidapi.com"
     }
 
@@ -638,4 +645,4 @@ async def rankings(interaction: discord.Interaction, format: str):
     except:
         pass
 
-bot.run(token)
+bot.run(DISCORD_TOKEN)
