@@ -6,6 +6,9 @@ import requests
 from bs4 import BeautifulSoup
 from discord import app_commands
 from dotenv import load_dotenv
+import asyncio
+
+import screengrab
 
 load_dotenv()
 
@@ -67,6 +70,8 @@ team_flag_mapping_2 = {
 
 bot = commands.Bot(command_prefix='/', intents=discord.Intents.all())
 
+# Global dictionary to store tasks
+subscribed_tasks = {}
 
 @bot.event
 async def on_guild_join(guild):
@@ -644,5 +649,80 @@ async def rankings(interaction: discord.Interaction, format: str):
 
     except:
         pass
+
+async def subscribe_to_score(match_description, url, comment):
+    while True:
+        print(f"in subscribe to score {match_description}: {url}")
+        image_path, is_final_score = await screengrab.get_score_image(url)
+        print(f"image_path: {image_path}")
+        if not image_path:
+            await comment.edit(content=f"No score found for '{match_description}'")
+            break
+
+        print("updating with new score")
+        await comment.edit(content=None, attachments=[discord.File(image_path)])
+
+        if is_final_score:
+            await comment.edit(content="Final score", attachments=[discord.File(image_path)])
+            break
+        else:
+            await asyncio.sleep(60)
+
+    await delete_subscription_inner(match_description)
+
+@bot.tree.command(name="subscribe", description="Subscribe to live score updates")
+@app_commands.describe(match_description="Match Description (e.g., 'Australia vs India cricket')")
+async def subscribe(interaction: discord.Interaction, match_description: str):
+    print(f"Subscribe!: {match_description}")
+    await interaction.response.send_message(f"Getting score for '{match_description}'")
+    comment = await interaction.original_response()
+    await comment.pin()
+
+    url = await screengrab.match_description_to_sports_score_url(match_description)
+
+    if not url:
+        await comment.edit(f"No match found on Google for   '{match_description}'???")
+        return
+
+    print(f"Found url: {url}")
+
+    await comment.edit(content=f"Found match. Will start updating.")
+
+    task = bot.loop.create_task(subscribe_to_score(match_description, url, comment))
+    subscribed_tasks[match_description] = task, comment
+
+@bot.tree.command(name="list_subscribed", description="List all current score subscriptions")
+async def list_subscribed(interaction: discord.Interaction):
+    if subscribed_tasks:
+        subscribed_list = "\n".join(
+            f"{index + 1}. {key}" for index, key in enumerate(subscribed_tasks)
+        )
+        await interaction.response.send_message(f"Current subscriptions:\n{subscribed_list}")
+    else:
+        await interaction.response.send_message("No current subscriptions")
+
+@bot.tree.command(name="unsubscribe", description="Unsubscribe from a score update")
+@app_commands.describe(subscription_number="Subscription number")
+async def unsubscribe(interaction: discord.Interaction, subscription_number: int):
+    try:
+        delete_subscription_inner(list(subscribed_tasks.keys())[subscription_number - 1])
+    except Exception as e:
+        await interaction.response.send_message(f"Error deleting subscription: {e}")
+
+async def delete_subscription_inner(match_description):
+    print(f"Deleting subscription for {match_description}")
+    if match_description in subscribed_tasks:
+        comment = subscribed_tasks[match_description][1]
+        try:
+            await comment.unpin()
+        except Exception as e:
+            print(f"Error unpinning comment: {e}")
+
+        try:
+            subscribed_tasks[match_description][0].cancel()
+        except Exception as e:
+            print(f"Error deleting subscription: {e}")
+
+        del subscribed_tasks[match_description]
 
 bot.run(DISCORD_TOKEN)
