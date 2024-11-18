@@ -676,8 +676,6 @@ async def subscribe(interaction: discord.Interaction, match_description: str):
     print(f"Subscribe!: {match_description}")
     await interaction.response.send_message(f"Getting score for '{match_description}'")
     comment = await interaction.original_response()
-    await comment.pin()
-
     url = await screengrab.match_description_to_sports_score_url(match_description)
 
     if not url:
@@ -687,6 +685,7 @@ async def subscribe(interaction: discord.Interaction, match_description: str):
     print(f"Found url: {url}")
 
     await comment.edit(content=f"Found match. Will start updating.")
+    await comment.pin()
 
     task = bot.loop.create_task(subscribe_to_score(match_description, url, comment))
     subscribed_tasks[match_description] = task, comment
@@ -701,7 +700,7 @@ async def list_subscribed(interaction: discord.Interaction):
     else:
         await interaction.response.send_message("No current subscriptions")
 
-@bot.tree.command(name="unsubscribe", description="Unsubscribe from a score update")
+@bot.tree.command(name="un_subscribe", description="Unsubscribe from a score update")
 @app_commands.describe(subscription_number="Subscription number")
 async def unsubscribe(interaction: discord.Interaction, subscription_number: int):
     try:
