@@ -54,7 +54,7 @@ async def get_score_image(url):
         # Get the specific div
         div = page.locator('div.imso_mh__tm-scr.imso_mh__mh-bd').first
 
-        final_score_locators = page.locator('div[aria-label="Final score"]')
+        final_score_locators = page.locator('[aria-label="Final score"]')
         is_final_score = bool(await final_score_locators.count())
         
         print("Taking screenshot")
