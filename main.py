@@ -16,6 +16,8 @@ import screengrab
 
 load_dotenv()
 
+REFRESH_INT_S = 30
+
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 RAPID_API_KEY = os.getenv('RAPID_API_KEY')
 data_2 = ""
@@ -684,7 +686,7 @@ async def _subscribe_to_score(match_description, url, comment):
             break
 
         print("updating with new score")
-        pst_time = start_time.strftime('%H:%M')
+        pst_time = start_time.strftime('%H:%M:%S')
         await comment.edit(content=f"Updated: {pst_time}", attachments=[discord.File(image_path)])
 
         # try to cleanup image file
@@ -699,7 +701,7 @@ async def _subscribe_to_score(match_description, url, comment):
             break
         else:
             elapsed_time = (datetime.now() - start_time).total_seconds()
-            sleep_time = max(60 - elapsed_time, 10)
+            sleep_time = max(REFRESH_INT_S - elapsed_time, 10)
             print(f"sleeping for {sleep_time} seconds")
             await asyncio.sleep(sleep_time)
 
