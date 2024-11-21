@@ -666,8 +666,14 @@ async def subscribe_to_score(match_description, url, comment):
         pst_time = start_time.strftime('%H:%M')
         await comment.edit(content=f"Updated: {pst_time}", attachments=[discord.File(image_path)])
 
+        # try to cleanup image file
+        try:
+            os.remove(image_path)
+        except Exception as e:
+            print(f"Error deleting image file: {e}")
+
         if is_final_score:
-            await comment.edit(content="Final score", attachments=[discord.File(image_path)])
+            await comment.edit(content="Final score")
             break
         else:
             elapsed_time = (datetime.now() - start_time).total_seconds()
@@ -706,7 +712,7 @@ async def list_subscribed(interaction: discord.Interaction):
     else:
         await interaction.response.send_message("No current subscriptions")
 
-@bot.tree.command(name="un_subscribe", description="Unsubscribe from a score update")
+@bot.tree.command(name="unsubscribe", description="Unsubscribe from a score update")
 @app_commands.describe(subscription_number="Subscription number")
 async def unsubscribe(interaction: discord.Interaction, subscription_number: int):
     try:
