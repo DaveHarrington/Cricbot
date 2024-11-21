@@ -1,6 +1,7 @@
 import os
 import re
 import asyncio
+import traceback
 from datetime import datetime
 
 import requests
@@ -654,7 +655,18 @@ async def rankings(interaction: discord.Interaction, format: str):
         pass
 
 async def subscribe_to_score(match_description, url, comment):
+    try:
+        await _subscribe_to_score(match_description, url, comment)
+    except Exception as e:
+        print(f"Error in _subscribe_to_score: {e}")
+        traceback.print_exc()
+        await comment.edit(content=f"¯\_(ツ)_/¯ Fuck: {e}")
+        await delete_subscription_inner(match_description)
+        raise
+
+async def _subscribe_to_score(match_description, url, comment):
     while True:
+        start_time = datetime.now()
         print(f"in subscribe to score {match_description}: {url}")
         image_path, is_final_score = await screengrab.get_score_image(url)
         print(f"image_path: {image_path}")
@@ -668,6 +680,7 @@ async def subscribe_to_score(match_description, url, comment):
 
         # try to cleanup image file
         try:
+            print(f"deleting image file: {image_path}")
             os.remove(image_path)
         except Exception as e:
             print(f"Error deleting image file: {e}")
@@ -691,7 +704,7 @@ async def subscribe(interaction: discord.Interaction, match_description: str):
     url = await screengrab.match_description_to_sports_score_url(match_description)
 
     if not url:
-        await comment.edit(f"No match found on Google for   '{match_description}'???")
+        await comment.edit(content=f"No match found on Google for '{match_description}'???")
         return
 
     print(f"Found url: {url}")
