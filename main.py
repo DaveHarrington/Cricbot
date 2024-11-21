@@ -1,12 +1,15 @@
 import os
 import re
-import discord
-from discord.ext import commands
+import asyncio
+from datetime import datetime
+
 import requests
 from bs4 import BeautifulSoup
-from discord import app_commands
 from dotenv import load_dotenv
-import asyncio
+
+import discord
+from discord import app_commands
+from discord.ext import commands
 
 import screengrab
 
@@ -660,16 +663,19 @@ async def subscribe_to_score(match_description, url, comment):
             break
 
         print("updating with new score")
-        await comment.edit(content=None, attachments=[discord.File(image_path)])
+        pst_time = start_time.strftime('%H:%M')
+        await comment.edit(content=f"Updated: {pst_time}", attachments=[discord.File(image_path)])
 
         if is_final_score:
             await comment.edit(content="Final score", attachments=[discord.File(image_path)])
             break
         else:
-            await asyncio.sleep(60)
+            elapsed_time = (datetime.now() - start_time).total_seconds()
+            sleep_time = max(60 - elapsed_time, 10)
+            print(f"sleeping for {sleep_time} seconds")
+            await asyncio.sleep(sleep_time)
 
     await delete_subscription_inner(match_description)
-
 @bot.tree.command(name="subscribe", description="Subscribe to live score updates")
 @app_commands.describe(match_description="Match Description (e.g., 'Australia vs India cricket')")
 async def subscribe(interaction: discord.Interaction, match_description: str):
@@ -704,7 +710,7 @@ async def list_subscribed(interaction: discord.Interaction):
 @app_commands.describe(subscription_number="Subscription number")
 async def unsubscribe(interaction: discord.Interaction, subscription_number: int):
     try:
-        delete_subscription_inner(list(subscribed_tasks.keys())[subscription_number - 1])
+        await delete_subscription_inner(list(subscribed_tasks.keys())[subscription_number - 1])
     except Exception as e:
         await interaction.response.send_message(f"Error deleting subscription: {e}")
 
