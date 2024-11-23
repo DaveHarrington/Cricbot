@@ -667,45 +667,60 @@ async def subscribe_to_score(match_description, url, comment):
         raise
 
 async def _subscribe_to_score(match_description, url, comment):
-    while True:
+    keep_running = True
+    while keep_running:
         start_time = datetime.now()
-        print(f"in subscribe to score {match_description}: {url}")
         retry = 3
         while retry > 0:
             try:
-                image_path, is_final_score = await screengrab.get_score_image(url)
-                break
+                keep_running = await _subscribe_to_score_inner(match_description, url, comment)
             except Exception as e:
                 retry -= 1
                 if retry == 0:
                     raise e
                 await asyncio.sleep(5)
 
-        if not image_path:
-            await comment.edit(content=f"No score found for '{match_description}'")
-            break
-
-        print("updating with new score")
-        pst_time = start_time.strftime('%H:%M:%S')
-        await comment.edit(content=f"Updated: {pst_time}", attachments=[discord.File(image_path)])
-
-        # try to cleanup image file
-        try:
-            print(f"deleting image file: {image_path}")
-            os.remove(image_path)
-        except Exception as e:
-            print(f"Error deleting image file: {e}")
-
-        if is_final_score:
-            await comment.edit(content="Final score")
-            break
-        else:
-            elapsed_time = (datetime.now() - start_time).total_seconds()
-            sleep_time = max(REFRESH_INT_S - elapsed_time, 10)
-            print(f"sleeping for {sleep_time} seconds")
-            await asyncio.sleep(sleep_time)
+        elapsed_time = (datetime.now() - start_time).total_seconds()
+        sleep_time = max(REFRESH_INT_S - elapsed_time, 10)
+        print(f"sleeping for {sleep_time} seconds")
+        await asyncio.sleep(sleep_time)
 
     await delete_subscription_inner(match_description)
+
+async def _subscribe_to_score_inner(match_description, url, comment):
+    print(f"in subscribe to score {match_description}: {url}")
+    retry = 3
+    while retry > 0:
+        try:
+            image_path, is_final_score = await screengrab.get_score_image(url)
+            break
+        except Exception as e:
+            retry -= 1
+            if retry == 0:
+                raise e
+            await asyncio.sleep(5)
+
+    if not image_path:
+        await comment.edit(content=f"No score found for '{match_description}'")
+        return False
+
+    print("updating with new score")
+    pst_time = datetime.now().strftime('%H:%M:%S')
+    await comment.edit(content=f"Updated: {pst_time}", attachments=[discord.File(image_path)])
+
+    # try to cleanup image file
+    try:
+        print(f"deleting image file: {image_path}")
+        os.remove(image_path)
+    except Exception as e:
+        print(f"Error deleting image file: {e}")
+
+    if is_final_score:
+        await comment.edit(content="Final score")
+        return False
+
+    return True
+
 @bot.tree.command(name="subscribe", description="Subscribe to live score updates")
 @app_commands.describe(match_description="Match Description (e.g., 'Australia vs India cricket')")
 async def subscribe(interaction: discord.Interaction, match_description: str):
