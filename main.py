@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import asyncio
 import traceback
 from datetime import datetime
@@ -79,10 +80,39 @@ bot = commands.Bot(command_prefix='/', intents=discord.Intents.all())
 # Global dictionary to store tasks
 subscribed_tasks = {}
 
+SUBSCRIPTIONS_FILE = "/var/run/cricbot/subscriptions.json"
+
+def save_subscriptions():
+    """Save the current subscriptions to a JSON file."""
+    with open(SUBSCRIPTIONS_FILE, 'w') as f:
+        json.dump({k: (v[2], v[3], v[4]) for k, v in subscribed_tasks.items()}, f)
+
+async def load_subscriptions():
+    """Load subscriptions from a JSON file and restart tasks."""
+    try:
+        with open(SUBSCRIPTIONS_FILE, 'r') as f:
+            subscriptions = json.load(f)
+    except FileNotFoundError:
+        print("No previous subscriptions found.")
+        return
+    except Exception as e:
+        print(f"Error loading subscriptions: {e}")
+        return
+
+    try:
+        for match_description, (channel_id, comment_id, url) in subscriptions.items():
+            # Retrieve the channel and message to restart the task
+            channel = bot.get_channel(channel_id)
+            if channel:
+                comment = await channel.fetch_message(comment_id)
+                if comment:
+                    await create_subscription(match_description, url, comment, channel.id)
+    except Exception as e:
+        print(f"Error loading subscriptions: {e}")
+
 @bot.event
 async def on_guild_join(guild):
     await update_activity()
-
 
 @bot.event
 async def on_guild_remove(guild):
@@ -100,9 +130,9 @@ async def on_ready():
     print(f'Logged in as {bot.user.name}')
     await update_activity()
     await bot.tree.sync()
+    await load_subscriptions()  # Load subscriptions on startup
 
 # livescore
-
 
 @bot.tree.command(name="live_score", description="Get LIVE scorecard")
 @app_commands.describe(team_short_name="Team Name")
@@ -670,15 +700,18 @@ async def _subscribe_to_score(match_description, url, comment):
     keep_running = True
     while keep_running:
         start_time = datetime.now()
-        retry = 3
+        retry = 5
         while retry > 0:
             try:
                 keep_running = await _subscribe_to_score_inner(match_description, url, comment)
+                break
             except Exception as e:
+                print(f"Error in _subscribe_to_score_inner, attempts left: {retry}")
                 retry -= 1
                 if retry == 0:
                     raise e
-                await asyncio.sleep(5)
+                await asyncio.sleep((5 - retry) * 30)
+                print("Retrying...")
 
         elapsed_time = (datetime.now() - start_time).total_seconds()
         sleep_time = max(REFRESH_INT_S - elapsed_time, 10)
@@ -698,7 +731,7 @@ async def _subscribe_to_score_inner(match_description, url, comment):
             retry -= 1
             if retry == 0:
                 raise e
-            await asyncio.sleep(5)
+            await asyncio.sleep((3 - retry) * 30)
 
     if not image_path:
         await comment.edit(content=f"No score found for '{match_description}'")
@@ -725,6 +758,9 @@ async def _subscribe_to_score_inner(match_description, url, comment):
 @app_commands.describe(match_description="Match Description (e.g., 'Australia vs India cricket')")
 async def subscribe(interaction: discord.Interaction, match_description: str):
     print(f"Subscribe!: {match_description}")
+    if match_description in subscribed_tasks:
+        await interaction.response.send_message(f"Already subscribed to '{match_description}'")
+        return
     await interaction.response.send_message(f"Getting score for '{match_description}'")
     comment = await interaction.original_response()
     print("Checking if match description is valid")
@@ -739,8 +775,12 @@ async def subscribe(interaction: discord.Interaction, match_description: str):
     await comment.edit(content=f"Found match. Will start updating.")
     await comment.pin()
 
+    await create_subscription(match_description, url, comment, interaction.channel_id)
+    save_subscriptions()  # Save subscriptions after adding a new one
+
+async def create_subscription(match_description, url, comment, channel_id):
     task = bot.loop.create_task(subscribe_to_score(match_description, url, comment))
-    subscribed_tasks[match_description] = task, comment
+    subscribed_tasks[match_description] = task, comment, channel_id, comment.id, url
 
 @bot.tree.command(name="list_subscribed", description="List all current score subscriptions")
 async def list_subscribed(interaction: discord.Interaction):
@@ -756,7 +796,10 @@ async def list_subscribed(interaction: discord.Interaction):
 @app_commands.describe(subscription_number="Subscription number")
 async def unsubscribe(interaction: discord.Interaction, subscription_number: int):
     try:
-        await delete_subscription_inner(list(subscribed_tasks.keys())[subscription_number - 1])
+        match_description = list(subscribed_tasks.keys())[subscription_number - 1]
+        await delete_subscription_inner(match_description)
+        save_subscriptions()  # Save subscriptions after removing one
+        await interaction.response.send_message(f"Unsubscribed from: {match_description}")
     except Exception as e:
         await interaction.response.send_message(f"Error deleting subscription: {e}")
 
@@ -775,5 +818,6 @@ async def delete_subscription_inner(match_description):
             print(f"Error deleting subscription: {e}")
 
         del subscribed_tasks[match_description]
+        save_subscriptions()  # Save subscriptions after deletion
 
 bot.run(DISCORD_TOKEN)
