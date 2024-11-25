@@ -18,6 +18,7 @@ import screengrab
 load_dotenv()
 
 REFRESH_INT_S = 30
+REFRESH_STUMPS_INT_S = 15 * 60
 
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 RAPID_API_KEY = os.getenv('RAPID_API_KEY')
@@ -714,10 +715,11 @@ async def _subscribe_to_score(match_description, channel_id, comment_id, url):
         retry = 5
         while retry > 0:
             try:
-                keep_running = await _subscribe_to_score_inner(match_description, url, comment)
+                keep_running, is_stumps = await _subscribe_to_score_inner(match_description, url, comment)
                 break
             except Exception as e:
                 print(f"Error in _subscribe_to_score_inner, attempts left: {retry}")
+                print(e)
                 comment = await get_comment_handle(channel_id, comment_id)
                 if not comment:
                     print(f"Comment not found for {match_description}")
@@ -730,7 +732,11 @@ async def _subscribe_to_score(match_description, channel_id, comment_id, url):
                 print("Retrying...")
 
         elapsed_time = (datetime.now() - start_time).total_seconds()
-        sleep_time = max(REFRESH_INT_S - elapsed_time, 10)
+        if not is_stumps:
+            sleep_time = max(REFRESH_INT_S - elapsed_time, 10)
+        else:
+            sleep_time = max(REFRESH_STUMPS_INT_S - elapsed_time, 10)
+
         print(f"sleeping for {sleep_time} seconds")
         await asyncio.sleep(sleep_time)
 
@@ -741,7 +747,8 @@ async def _subscribe_to_score_inner(match_description, url, comment):
     retry = 3
     while retry > 0:
         try:
-            image_path, is_final_score = await screengrab.get_score_image(url)
+            image_path, is_finished, is_stumps = await screengrab.get_score_image(url)
+            print(f"get score: {image_path}, finished: {is_finished}, is stumps: {is_stumps}")
             break
         except Exception as e:
             retry -= 1
@@ -751,7 +758,7 @@ async def _subscribe_to_score_inner(match_description, url, comment):
 
     if not image_path:
         await comment.edit(content=f"No score found for '{match_description}'")
-        return False
+        return False, False
 
     print("updating with new score")
     pst_time = datetime.now().strftime('%H:%M:%S')
@@ -764,11 +771,11 @@ async def _subscribe_to_score_inner(match_description, url, comment):
     except Exception as e:
         print(f"Error deleting image file: {e}")
 
-    if is_final_score:
-        await comment.edit(content="Final score")
-        return False
+    if is_finished:
+        await comment.edit(content="Game finished")
+        return False, False
 
-    return True
+    return True, is_stumps
 
 @bot.tree.command(name="subscribe", description="Subscribe to live score updates")
 @app_commands.describe(match_description="Match Description (e.g., 'Australia vs India cricket')")
