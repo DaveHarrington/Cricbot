@@ -85,7 +85,8 @@ SUBSCRIPTIONS_FILE = "/var/run/cricbot/subscriptions.json"
 def save_subscriptions():
     """Save the current subscriptions to a JSON file."""
     with open(SUBSCRIPTIONS_FILE, 'w') as f:
-        json.dump({k: (v[2], v[3], v[4]) for k, v in subscribed_tasks.items()}, f)
+        save_subscribed_tasks = {k: {"channel_id": v["channel_id"], "comment_id": v["comment_id"], "url": v["url"]} for k, v in subscribed_tasks.items()}
+        json.dump(save_subscribed_tasks, f)
 
 async def load_subscriptions():
     """Load subscriptions from a JSON file and restart tasks."""
@@ -100,13 +101,8 @@ async def load_subscriptions():
         return
 
     try:
-        for match_description, (channel_id, comment_id, url) in subscriptions.items():
-            # Retrieve the channel and message to restart the task
-            channel = bot.get_channel(channel_id)
-            if channel:
-                comment = await channel.fetch_message(comment_id)
-                if comment:
-                    await create_subscription(match_description, url, comment, channel.id)
+        for match_description, data in subscriptions.items():
+            await create_subscription(match_description, data["url"], data["channel_id"], data["comment_id"])
     except Exception as e:
         print(f"Error loading subscriptions: {e}")
 
@@ -686,17 +682,32 @@ async def rankings(interaction: discord.Interaction, format: str):
     except:
         pass
 
-async def subscribe_to_score(match_description, url, comment):
+async def get_comment_handle(channel_id, comment_id):
+    channel = bot.get_channel(channel_id)
+    if channel:
+        comment = await channel.fetch_message(comment_id)
+        return comment
+    return None
+    
+async def subscribe_to_score(match_description, channel_id, comment_id, url):
     try:
-        await _subscribe_to_score(match_description, url, comment)
+        await _subscribe_to_score(match_description, channel_id, comment_id, url)
     except Exception as e:
         print(f"Error in _subscribe_to_score: {e}")
         traceback.print_exc()
-        await comment.edit(content=f"¯\_(ツ)_/¯ Fuck: {e}")
+        comment = await get_comment_handle(channel_id, comment_id)
+        if comment:
+            await comment.edit(content=f"¯\_(ツ)_/¯ Fuck: {e}")
         await delete_subscription_inner(match_description)
         raise
 
-async def _subscribe_to_score(match_description, url, comment):
+async def _subscribe_to_score(match_description, channel_id, comment_id, url):
+    comment = await get_comment_handle(channel_id, comment_id)
+
+    if not comment:
+        print(f"Comment not found for {match_description}")
+        return
+
     keep_running = True
     while keep_running:
         start_time = datetime.now()
@@ -707,6 +718,11 @@ async def _subscribe_to_score(match_description, url, comment):
                 break
             except Exception as e:
                 print(f"Error in _subscribe_to_score_inner, attempts left: {retry}")
+                comment = await get_comment_handle(channel_id, comment_id)
+                if not comment:
+                    print(f"Comment not found for {match_description}")
+                    raise e
+
                 retry -= 1
                 if retry == 0:
                     raise e
@@ -775,12 +791,13 @@ async def subscribe(interaction: discord.Interaction, match_description: str):
     await comment.edit(content=f"Found match. Will start updating.")
     await comment.pin()
 
-    await create_subscription(match_description, url, comment, interaction.channel_id)
+    await create_subscription(match_description, url, interaction.channel_id, comment.id)
     save_subscriptions()  # Save subscriptions after adding a new one
 
-async def create_subscription(match_description, url, comment, channel_id):
-    task = bot.loop.create_task(subscribe_to_score(match_description, url, comment))
-    subscribed_tasks[match_description] = task, comment, channel_id, comment.id, url
+async def create_subscription(match_description, url, channel_id, comment_id):
+    task = bot.loop.create_task(subscribe_to_score(match_description, channel_id, comment_id, url))
+    subscribed_tasks[match_description] = {"task": task, "channel_id": channel_id, "comment_id": comment_id, "url": url}
+    print(f"{subscribed_tasks}")
 
 @bot.tree.command(name="list_subscribed", description="List all current score subscriptions")
 async def list_subscribed(interaction: discord.Interaction):
@@ -806,14 +823,16 @@ async def unsubscribe(interaction: discord.Interaction, subscription_number: int
 async def delete_subscription_inner(match_description):
     print(f"Deleting subscription for {match_description}")
     if match_description in subscribed_tasks:
-        comment = subscribed_tasks[match_description][1]
+        channel_id = subscribed_tasks[match_description]["channel_id"]
+        comment_id = subscribed_tasks[match_description]["comment_id"]
+        comment = await get_comment_handle(channel_id, comment_id)
         try:
             await comment.unpin()
         except Exception as e:
             print(f"Error unpinning comment: {e}")
 
         try:
-            subscribed_tasks[match_description][0].cancel()
+            subscribed_tasks[match_description]["task"].cancel()
         except Exception as e:
             print(f"Error deleting subscription: {e}")
 
