@@ -12,7 +12,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-import screengrab
+import muse
 
 load_dotenv()
 
@@ -656,9 +656,9 @@ async def rankings(interaction: discord.Interaction, format: str):
     except:
         pass
 
-async def subscribe_to_score(match_description, url, comment):
+async def subscribe_to_score(match_description, comment):
     try:
-        await _subscribe_to_score(match_description, url, comment)
+        await _subscribe_to_score(match_description, comment)
     except Exception as e:
         print(f"Error in _subscribe_to_score: {e}")
         traceback.print_exc()
@@ -666,14 +666,15 @@ async def subscribe_to_score(match_description, url, comment):
         await delete_subscription_inner(match_description)
         raise
 
-async def _subscribe_to_score(match_description, url, comment):
+async def _subscribe_to_score(match_description, comment):
     keep_running = True
     while keep_running:
         start_time = datetime.now()
         retry = 3
         while retry > 0:
             try:
-                keep_running = await _subscribe_to_score_inner(match_description, url, comment)
+                keep_running = await _subscribe_to_score_inner(match_description, comment)
+                break
             except Exception as e:
                 retry -= 1
                 if retry == 0:
@@ -687,39 +688,19 @@ async def _subscribe_to_score(match_description, url, comment):
 
     await delete_subscription_inner(match_description)
 
-async def _subscribe_to_score_inner(match_description, url, comment):
-    print(f"in subscribe to score {match_description}: {url}")
-    retry = 3
-    while retry > 0:
-        try:
-            image_path, is_final_score = await screengrab.get_score_image(url)
-            break
-        except Exception as e:
-            retry -= 1
-            if retry == 0:
-                raise e
-            await asyncio.sleep(5)
+async def _subscribe_to_score_inner(match_description, comment):
+    print(f"in subscribe to score {match_description}")
+    score = await muse.get_score(match_description)
 
-    if not image_path:
+    if not score["found"]:
         await comment.edit(content=f"No score found for '{match_description}'")
         return False
 
     print("updating with new score")
     pst_time = datetime.now().strftime('%H:%M:%S')
-    await comment.edit(content=f"Updated: {pst_time}", attachments=[discord.File(image_path)])
+    await comment.edit(content=muse.format_score(score, pst_time, team_flag_mapping_2))
 
-    # try to cleanup image file
-    try:
-        print(f"deleting image file: {image_path}")
-        os.remove(image_path)
-    except Exception as e:
-        print(f"Error deleting image file: {e}")
-
-    if is_final_score:
-        await comment.edit(content="Final score")
-        return False
-
-    return True
+    return not muse.is_final(score)
 
 @bot.tree.command(name="subscribe", description="Subscribe to live score updates")
 @app_commands.describe(match_description="Match Description (e.g., 'Australia vs India cricket')")
@@ -727,19 +708,9 @@ async def subscribe(interaction: discord.Interaction, match_description: str):
     print(f"Subscribe!: {match_description}")
     await interaction.response.send_message(f"Getting score for '{match_description}'")
     comment = await interaction.original_response()
-    print("Checking if match description is valid")
-    url = await screengrab.match_description_to_sports_score_url(match_description)
-
-    if not url:
-        await comment.edit(content=f"No match found on Google for '{match_description}'???")
-        return
-
-    print(f"Found url: {url}")
-
-    await comment.edit(content=f"Found match. Will start updating.")
     await comment.pin()
 
-    task = bot.loop.create_task(subscribe_to_score(match_description, url, comment))
+    task = bot.loop.create_task(subscribe_to_score(match_description, comment))
     subscribed_tasks[match_description] = task, comment
 
 @bot.tree.command(name="list_subscribed", description="List all current score subscriptions")

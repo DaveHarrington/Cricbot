@@ -40,6 +40,9 @@ Set `DISCORD_TOKEN="<token>"` in .env
 Get a Rapid API token
 Set `RAPID_API_KEY="<key>" in .env
 
+Get a Meta Model API key (used by `/subscribe` to look up live scores with `muse-spark-1.3-contributor` + web search): https://dev.meta.ai
+Set `MUSE_API_KEY="<key>"` in .env
+
 ```
 python -m venv .venv
 pip install -r requirements.txt
