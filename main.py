@@ -1,54 +1,29 @@
 import os
-import re
+import json
 import asyncio
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 
-import requests
-from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-import screengrab
+import espn
+import muse
 
 load_dotenv()
 
 REFRESH_INT_S = 30
+# Sports whose scores change fast enough to be worth polling more often
+SPORT_REFRESH_INT_S = {"basketball": 5}
+MAX_RETRY_BACKOFF_S = 600
+SUBSCRIPTIONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "subscriptions.json")
 
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
-RAPID_API_KEY = os.getenv('RAPID_API_KEY')
-data_2 = ""
 
-team_flag_mapping = {
-    "afg": ":flag_af:",
-    "aus": ":flag_au:",
-    "ban": ":flag_bd:",
-    "eng": ":england:",
-    "ind": ":flag_in:",
-    "ire": ":four_leaf_clover:",
-    "nz": ":flag_nz:",
-    "pak": ":flag_pk:",
-    "rsa": ":flag_za:",
-    "sl": ":flag_lk:",
-    "wi": ":palm_tree:",
-    "zim": ":flag_zw:",
-    "sco": ":scotland:",
-    "ned": ":flag_nl:",
-    "usa": ":flag_us:",
-    "oma": ":flag_om:",
-    "uae": ":flag_ae:",
-    "nam": ":flag_na:",
-    "nep": ":flag_np:",
-    "can": ":flag_ca:",
-    "hk": ":flag_hk:",
-    "mly": ":flag_my:",
-    "png": ":flag_pg:"
-}
-
-team_flag_mapping_2 = {
+team_flags = {
     "Afghanistan": ":flag_af:",
     "Australia": ":flag_au:",
     "Bangladesh": ":flag_bd:",
@@ -76,7 +51,7 @@ team_flag_mapping_2 = {
 
 bot = commands.Bot(command_prefix='/', intents=discord.Intents.all())
 
-# Global dictionary to store tasks
+# Active subscriptions: message id -> (task, comment, event, match_description)
 subscribed_tasks = {}
 
 @bot.event
@@ -98,628 +73,108 @@ async def update_activity():
 @bot.event
 async def on_ready():
     print(f'Logged in as {bot.user.name}')
+    await resume_subscriptions()
     await update_activity()
-    await bot.tree.sync()
+    try:
+        await bot.tree.sync()
+    except Exception as e:
+        print(f"Error syncing commands: {e}")
 
 # livescore
 
-
-@bot.tree.command(name="live_score", description="Get LIVE scorecard")
-@app_commands.describe(team_short_name="Team Name")
-async def live_score(interaction: discord.Interaction, team_short_name: str):
-
-    team_short_name = team_short_name.lower()
-
-    if team_short_name == "india":
-        team_short_name = "ind"
-    elif team_short_name == "australia":
-        team_short_name = "aus"
-    elif team_short_name == "sa" or team_short_name == "south africa":
-        team_short_name = "rsa"
-    elif team_short_name == "new zealand":
-        team_short_name = "nz"
-    elif team_short_name == "pakistan":
-        team_short_name = "pak"
-    elif team_short_name == "afghanistan":
-        team_short_name = "afg"
-    elif team_short_name == "sri lanka":
-        team_short_name = "sl"
-    elif team_short_name == "england":
-        team_short_name = "eng"
-    elif team_short_name == "netherlands":
-        team_short_name = "ned"
-    elif team_short_name == "bangladesh":
-        team_short_name = "ban"
-    elif team_short_name == "west indies":
-        team_short_name = "wi"
-    elif team_short_name == "zimbabwe":
-        team_short_name = "zim"
-
-    url = 'https://www.cricbuzz.com/'
-    response = requests.get(url)
-    soup = BeautifulSoup(response.content, 'html.parser')
-
-    live_anchor = soup.find('a', class_='cb-mat-mnu-itm cb-ovr-flo', string=lambda text: (
-        team_short_name.upper() in text and "Break" in text) or (team_short_name.upper() in text and "Live" in text))
-
-    if live_anchor:
-
-        link = live_anchor['href']
-        split_link = link.split('/')
-
-        if len(split_link) > 2:
-            extracted_number = split_link[2]
-            api_url = f"https://cricbuzz-cricket.p.rapidapi.com/mcenter/v1/{extracted_number}/scard"
-            api_url_2 = f"https://cricbuzz-cricket.p.rapidapi.com/mcenter/v1/{extracted_number}/overs"
-
-            headers = {
-                "X-RapidAPI-Key": RAPID_API_KEY,
-                "X-RapidAPI-Host": "cricbuzz-cricket.p.rapidapi.com"
-            }
-
-            try:
-                api_response = requests.get(api_url, headers=headers)
-                data = api_response.json()
-
-                api_response_2 = requests.get(api_url_2, headers=headers)
-                data_2 = api_response_2.json()
-
-                match_type = data['matchHeader']['matchType']
-                series_name = data["matchHeader"]["seriesDesc"]
-                valid_series_names = ["Indian Premier League", "Big Bash League", "Pakistan Super League", "Caribbean Premier League",
-                                      "Major League Cricket", "Lanka Premier League", "One-Day Cup", "T20I", "County", "World Cup"]
-
-                if match_type == "International" or any(name in series_name for name in valid_series_names):
-
-                    team1_name = data["matchHeader"]["matchTeamInfo"][0]["battingTeamShortName"]
-                    team1_flag = ""
-                    if any(abbreviation in team1_name.lower() for abbreviation in team_flag_mapping.keys()):
-                        for abbreviation, flag in team_flag_mapping.items():
-                            if abbreviation in team1_name.lower():
-                                team1_flag = flag
-                                team1_name = f"{team1_flag} {team1_name}"
-                                break
-
-                    team2_name = data["matchHeader"]["matchTeamInfo"][0]["bowlingTeamShortName"]
-                    team2_flag = ""
-                    if any(abbreviation in team2_name.lower() for abbreviation in team_flag_mapping.keys()):
-                        for abbreviation, flag in team_flag_mapping.items():
-                            if abbreviation in team2_name.lower():
-                                team2_flag = flag
-                                team2_name = f"{team2_flag} {team2_name}"
-                                break
-
-                    status = data['matchHeader']['status']
-
-                    team1_score = "`Yet to bat`"
-                    team1_info = ""
-                    team1_runs = ""
-                    team1_overs = ""
-                    team1_wickets = ""
-                    team1_runrate = ""
-
-                    team2_score = "`Yet to bat`"
-                    team2_info = ""
-                    team2_runs = ""
-                    team2_overs = ""
-                    team2_wickets = ""
-                    team2_runrate = ""
-
-                    try:
-                        team1_info = data['scoreCard'][0]
-                        team1_runs = team1_info['scoreDetails']['runs']
-                        team1_overs = team1_info['scoreDetails']['overs']
-                        team1_wickets = team1_info['scoreDetails']['wickets']
-                        team1_runrate = team1_info['scoreDetails']['runRate']
-                        team1_score = f"{team1_runs}/{team1_wickets} ({team1_overs}) RR: {team1_runrate}"
-                        scard = f"{team1_name}: `{team1_score}`\n\n{team2_name}: `{team2_score}`\n\n`{status}`"
-                    except:
-                        pass
-
-                    try:
-                        team2_info = data['scoreCard'][1]
-                        team2_runs = team2_info['scoreDetails']['runs']
-                        team2_overs = team2_info['scoreDetails']['overs']
-                        team2_wickets = team2_info['scoreDetails']['wickets']
-                        team2_runrate = team2_info['scoreDetails']['runRate']
-                        required_rate = data_2["requiredRunRate"]
-                        status = f"{status} (Required Rate: {required_rate})"
-                        team2_score = f"{team2_runs}/{team2_wickets} ({team2_overs}) RR: {team2_runrate}"
-                        scard = f"{team1_name}: `{team1_score}`\n\n{team2_name}: `{team2_score}`\n\n`{status}`"
-                    except:
-                        pass
-
-                    strike_bat_name = data_2["batsmanStriker"]["batName"]
-                    strike_bat_runs = data_2["batsmanStriker"]["batRuns"]
-                    strike_bat_balls = data_2["batsmanStriker"]["batBalls"]
-
-                    nonstrike_bat_name = data_2["batsmanNonStriker"]["batName"]
-                    nonstrike_bat_runs = data_2["batsmanNonStriker"]["batRuns"]
-                    nonstrike_bat_balls = data_2["batsmanNonStriker"]["batBalls"]
-
-                    strike_bowl_name = data_2["bowlerStriker"]["bowlName"]
-                    strike_bowl_wkts = data_2["bowlerStriker"]["bowlWkts"]
-                    strike_bowl_runs = data_2["bowlerStriker"]["bowlRuns"]
-                    strike_bowl_ovrs = data_2["bowlerStriker"]["bowlOvs"]
-                    strike_bowl_eco = data_2["bowlerStriker"]["bowlEcon"]
-
-                    nonstrike_bowl_name = data_2["bowlerNonStriker"]["bowlName"]
-                    nonstrike_bowl_wkts = data_2["bowlerNonStriker"]["bowlWkts"]
-                    nonstrike_bowl_runs = data_2["bowlerNonStriker"]["bowlRuns"]
-                    nonstrike_bowl_ovrs = data_2["bowlerNonStriker"]["bowlOvs"]
-                    nonstrike_bowl_eco = data_2["bowlerNonStriker"]["bowlEcon"]
-
-                    timeline = data_2["recentOvsStats"]
-                    pship_runs = data_2["partnerShip"]["runs"]
-                    pship_balls = data_2["partnerShip"]["balls"]
-
-                    match_state = data['matchHeader']['state']
-
-                    match_info = f"**{series_name}**\n\n**{scard}**\n\n"
-
-                else:
-                    await interaction.response.send_message(embed=discord.Embed(title=f"No match found for `{team_short_name}`", description="", color=discord.Color.random()))
-
-            except Exception as e:
-                pass
-
-            embd = discord.Embed(
-                title=f"LIVE", description=f"{match_info}", color=discord.Color.random())
-
-            match_state = data['matchHeader']['state']
-
-            if match_state == "In Progress":
-
-                embd.add_field(
-                    name="Bat Name", value=f"**`{strike_bat_name}*`\n`{nonstrike_bat_name}`**", inline=True)
-                embd.add_field(
-                    name="Runs", value=f"**`{strike_bat_runs}`\n`{nonstrike_bat_runs}`**", inline=True)
-                embd.add_field(
-                    name="Balls", value=f"**`{strike_bat_balls}`\n`{nonstrike_bat_balls}`**", inline=True)
-
-                embd.add_field(
-                    name="Bowl Name", value=f"**`{strike_bowl_name}*`\n`{nonstrike_bowl_name}`**", inline=True)
-                embd.add_field(
-                    name="Wkts/Runs", value=f"**`{strike_bowl_wkts}`/`{strike_bowl_runs}`\n`{nonstrike_bowl_wkts}`/`{nonstrike_bowl_runs}`**", inline=True)
-                embd.add_field(
-                    name="Ovrs/Eco", value=f"**`{strike_bowl_ovrs}`/`{strike_bowl_eco}`\n`{nonstrike_bowl_ovrs}`/`{nonstrike_bowl_eco}`**", inline=True)
-
-                embd.add_field(
-                    name=f"P'ship: `{pship_runs}({pship_balls})`", value=f"", inline=False)
-                embd.add_field(
-                    name=f"Timeline: `{timeline}`", value="", inline=False)
-
-            await interaction.response.send_message(embed=embd)
-        else:
-            await interaction.response.send_message(embed=discord.Embed(title=f"No match found for `{team_short_name}`", description="", color=discord.Color.random()))
-
-    else:
-        await interaction.response.send_message(embed=discord.Embed(title=f"No match found for `{team_short_name}`", description="", color=discord.Color.random()))
+async def find_event(match_description):
+    """Match a free-text description to one of today's ESPN events."""
+    return await muse.match_event(match_description, await espn.list_events())
 
 
-# invite
+@bot.tree.command(name="live_score", description="Get the current score of a match")
+@app_commands.describe(match_description="Match Description (e.g., 'india', 'fever vs aces')")
+async def live_score(interaction: discord.Interaction, match_description: str):
+    # Matching takes a few seconds, longer than Discord's 3s limit to respond
+    await interaction.response.defer()
+    try:
+        event = await find_event(match_description)
+        score = event and await espn.get_event(event["sport"], event["league"], event["id"])
+    except Exception as e:
+        traceback.print_exc()
+        await interaction.followup.send(f"Couldn't look up '{match_description}': {e}")
+        return
 
-@bot.tree.command(name="invite", description="Invite Cricbot to Your Server")
-async def live_score(interaction: discord.Interaction):
-    bot_invite_link = "bot_invite_link"
-    server_invite_link = "server_invite_link"
-    await interaction.response.send_message(
-        embed=discord.Embed(
-            title="Invite Links", description=f"**[Click here to invite Cricbot to your server]({bot_invite_link})\n\n[Click here to join Official CrikChat server]({server_invite_link})**", color=discord.Color.random())
-    )
+    if not score:
+        await interaction.followup.send(f"No match found on ESPN for '{match_description}'")
+        return
+
+    await interaction.followup.send(espn.format_score(score, team_flags))
 
 
-# vote
-
-@bot.tree.command(name="vote", description="Vote for Cricbot")
-async def live_score(interaction: discord.Interaction):
-    vote_link_1 = "bot_vote_link"
-    vote_link_2 = "bot_vote_link"
-    await interaction.response.send_message(
-        embed=discord.Embed(title="Help the developer to keep running this bot",
-                            description=f"**[Vote on top.gg]({vote_link_1})\n\n[Vote on discordbotlist.com]({vote_link_2})**", color=discord.Color.random())
-    )
-
- # help
+# help
 
 
 @bot.tree.command(name="help", description="Display all Commands")
-async def live_score(interaction: discord.Interaction):
+async def help_command(interaction: discord.Interaction):
     await interaction.response.send_message(
         embed=discord.Embed(title="Stay in the game with Cricbot: Your LIVE cricket score companion!",
-                            description=f"**Cricbot is used in over `{len(bot.guilds)}` servers, where cricket fans from all over the world always stay in the game.\n\nCommands:\n\n`/live_score` to view LIVE scorecard of an ongoing match.\n\n`/batters_rankings` to get latest ICC rankings of top 10 batters.\n\n`/bowlers_rankings` to get latest ICC rankings of top 10 bowlers.\n\n`/allrounders_rankings` to get latest ICC rankings of top 10 all-rounders.\n\n`/team_rankings` to get top 10 ICC ranked teams.\n\n`/invite` to invite Cricbot to your server.\n\n`/vote` to vote for Cricbot to keep it running.\n\n`/help` to display this message.**", color=discord.Color.random())
+                            description=f"**Cricbot is used in over `{len(bot.guilds)}` servers, where cricket fans from all over the world always stay in the game.\n\nCommands:\n\n`/live_score` to get the current score of a match.\n\n`/subscribe` to pin a message that keeps updating with the live score.\n\n`/list_subscribed` and `/unsubscribe` to manage this channel's subscriptions.\n\n`/help` to display this message.**", color=discord.Color.random())
     )
 
 
-# bowlers_rankings
-
-@bot.tree.command(name="bowlers_rankings", description="Get top 10 ICC ranked bowlers")
-@app_commands.describe(format="Game Format")
-async def rankings(interaction: discord.Interaction, format: str):
-    url = "https://cricbuzz-cricket.p.rapidapi.com/stats/v1/rankings/bowlers"
-
-    format = format.lower()
-
-    if format == 'odi' or format == 't20' or format == "t20i" or format == "test":
-        if format == "t20i":
-            format = "t20"
-        querystring = {"formatType": format}
-    else:
-        await interaction.response.send_message(
-            embed=discord.Embed(title="Invalid format name",
-                                description="", color=discord.Color.random())
-        )
-
-    new_format = format.upper()
-
-    headers = {
-        "X-RapidAPI-Key": RAPID_API_KEY,
-        "X-RapidAPI-Host": "cricbuzz-cricket.p.rapidapi.com"
-    }
-
+async def subscribe_to_score(match_description, event, comment):
     try:
-        response = requests.get(url, headers=headers, params=querystring)
-
-        if response.status_code == 200:
-            data = response.json()
-
-            try:
-                embed = discord.Embed(
-                    title=f"Bowlers {new_format} ICC Rankings", description="", color=discord.Color.random())
-                embed.add_field(
-                    name="Rank                    Name", value="", inline=True)
-                country_flag = ""
-                for player in data["rank"]:
-                    rank = player["rank"]
-                    if rank == "1":
-                        rank = "01"
-                    if rank == "2":
-                        rank = "02"
-                    if rank == "3":
-                        rank = "03"
-                    if rank == "4":
-                        rank = "04"
-                    if rank == "5":
-                        rank = "05"
-                    if rank == "6":
-                        rank = "06"
-                    if rank == "7":
-                        rank = "07"
-                    if rank == "8":
-                        rank = "08"
-                    if rank == "9":
-                        rank = "09"
-                    name = player["name"]
-                    country = player['country']
-
-                    if any(abbreviation in country for abbreviation in team_flag_mapping_2.keys()):
-                        for abbreviation, flag in team_flag_mapping_2.items():
-                            if abbreviation in country:
-                                country_flag = flag
-                                break
-
-                    embed.add_field(
-                        name=f"{rank}                    {country_flag}  {name}", value="", inline=False)
-
-                await interaction.response.send_message(embed=embed)
-
-            except Exception as e:
-                print(e)
-        else:
-            pass
-
-    except Exception as e:
-        print(e)
-
-
-# batters_rankings
-
-@bot.tree.command(name="batters_rankings", description="Get top 10 ICC ranked batters")
-@app_commands.describe(format="Game Format")
-async def rankings(interaction: discord.Interaction, format: str):
-    url = "https://cricbuzz-cricket.p.rapidapi.com/stats/v1/rankings/batsmen"
-
-    format = format.lower()
-
-    if format == 'odi' or format == 't20' or format == "t20i" or format == "test":
-        if format == "t20i":
-            format = "t20"
-        querystring = {"formatType": format}
-    else:
-        await interaction.response.send_message(
-            embed=discord.Embed(title="Invalid format name",
-                                description="", color=discord.Color.random())
-        )
-
-    new_format = format.upper()
-
-    headers = {
-        "X-RapidAPI-Key": RAPID_API_KEY,
-        "X-RapidAPI-Host": "cricbuzz-cricket.p.rapidapi.com"
-    }
-
-    try:
-        response = requests.get(url, headers=headers, params=querystring)
-
-        if response.status_code == 200:
-            data = response.json()
-
-            try:
-                embed = discord.Embed(
-                    title=f"Batters {new_format} ICC Rankings", description="", color=discord.Color.random())
-                embed.add_field(
-                    name="Rank                    Name", value="", inline=True)
-                country_flag = ""
-                for player in data["rank"]:
-                    rank = player["rank"]
-                    if rank == "1":
-                        rank = "01"
-                    if rank == "2":
-                        rank = "02"
-                    if rank == "3":
-                        rank = "03"
-                    if rank == "4":
-                        rank = "04"
-                    if rank == "5":
-                        rank = "05"
-                    if rank == "6":
-                        rank = "06"
-                    if rank == "7":
-                        rank = "07"
-                    if rank == "8":
-                        rank = "08"
-                    if rank == "9":
-                        rank = "09"
-                    name = player["name"]
-                    country = player['country']
-
-                    if any(abbreviation in country for abbreviation in team_flag_mapping_2.keys()):
-                        for abbreviation, flag in team_flag_mapping_2.items():
-                            if abbreviation in country:
-                                country_flag = flag
-                                break
-
-                    embed.add_field(
-                        name=f"{rank}                    {country_flag}  {name}", value="", inline=False)
-
-                await interaction.response.send_message(embed=embed)
-
-            except Exception as e:
-                print(e)
-        else:
-            pass
-
-    except Exception as e:
-        print(e)
-
-
-# allrounders_rankings
-
-@bot.tree.command(name="allrounders_rankings", description="Get top 10 ICC ranked allrounders")
-@app_commands.describe(format="Game Format")
-async def rankings(interaction: discord.Interaction, format: str):
-    print("All rounder ratings...")
-
-    url = "https://cricbuzz-cricket.p.rapidapi.com/stats/v1/rankings/allrounders"
-
-    format = format.lower()
-
-    if format == 'odi' or format == 't20' or format == "t20i" or format == "test":
-        if format == "t20i":
-            format = "t20"
-        querystring = {"formatType": format}
-    else:
-        await interaction.response.send_message(
-            embed=discord.Embed(title="Invalid format name",
-                                description="", color=discord.Color.random())
-        )
-
-    new_format = format.upper()
-
-    headers = {
-        "X-RapidAPI-Key": RAPID_API_KEY,
-        "X-RapidAPI-Host": "cricbuzz-cricket.p.rapidapi.com"
-    }
-
-    try:
-        response = requests.get(url, headers=headers, params=querystring)
-
-        if response.status_code == 200:
-            data = response.json()
-
-            try:
-                embed = discord.Embed(
-                    title=f"Allrounders {new_format} ICC Rankings", description="", color=discord.Color.random())
-                embed.add_field(
-                    name="Rank                    Name", value="", inline=True)
-                country_flag = ""
-                for player in data["rank"]:
-                    rank = player["rank"]
-                    if rank == "1":
-                        rank = "01"
-                    if rank == "2":
-                        rank = "02"
-                    if rank == "3":
-                        rank = "03"
-                    if rank == "4":
-                        rank = "04"
-                    if rank == "5":
-                        rank = "05"
-                    if rank == "6":
-                        rank = "06"
-                    if rank == "7":
-                        rank = "07"
-                    if rank == "8":
-                        rank = "08"
-                    if rank == "9":
-                        rank = "09"
-                    name = player["name"]
-                    country = player['country']
-
-                    if any(abbreviation in country for abbreviation in team_flag_mapping_2.keys()):
-                        for abbreviation, flag in team_flag_mapping_2.items():
-                            if abbreviation in country:
-                                country_flag = flag
-                                break
-
-                    embed.add_field(
-                        name=f"{rank}                    {country_flag}  {name}", value="", inline=False)
-
-                await interaction.response.send_message(embed=embed)
-
-            except Exception as e:
-                print(e)
-        else:
-            pass
-
-    except Exception as e:
-        print(e)
-
-# team_rankings
-
-
-@bot.tree.command(name="team_rankings", description="Get top 10 ICC ranked teams")
-@app_commands.describe(format="Game Format")
-async def rankings(interaction: discord.Interaction, format: str):
-    url = "https://cricbuzz-cricket.p.rapidapi.com/stats/v1/rankings/teams"
-
-    format = format.lower()
-
-    if format == 'odi' or format == 't20' or format == "t20i" or format == "test":
-        if format == "t20i":
-            format = "t20"
-        querystring = {"formatType": format}
-    else:
-        await interaction.response.send_message(
-            embed=discord.Embed(title="Invalid format name",
-                                description="", color=discord.Color.random())
-        )
-
-    new_format = format.upper()
-
-    headers = {
-        "X-RapidAPI-Key": RAPID_API_KEY,
-        "X-RapidAPI-Host": "cricbuzz-cricket.p.rapidapi.com"
-    }
-
-    try:
-        response = requests.get(url, headers=headers, params=querystring)
-
-        if response.status_code == 200:
-            data = response.json()
-
-            try:
-                embed = discord.Embed(
-                    title=f"Teams {new_format} ICC Rankings", description="", color=discord.Color.random())
-                embed.add_field(name="Rank               Country",
-                                value="", inline=True)
-                country_flag = ""
-                for i in range(10):
-                    team = data["rank"][i]
-                    rank = team["rank"]
-                    if rank == "1":
-                        rank = "01"
-                    if rank == "2":
-                        rank = "02"
-                    if rank == "3":
-                        rank = "03"
-                    if rank == "4":
-                        rank = "04"
-                    if rank == "5":
-                        rank = "05"
-                    if rank == "6":
-                        rank = "06"
-                    if rank == "7":
-                        rank = "07"
-                    if rank == "8":
-                        rank = "08"
-                    if rank == "9":
-                        rank = "09"
-                    country = team["name"]
-
-                    if any(abbreviation in country for abbreviation in team_flag_mapping_2.keys()):
-                        for abbreviation, flag in team_flag_mapping_2.items():
-                            if abbreviation in country:
-                                country_flag = flag
-                                break
-
-                    embed.add_field(
-                        name=f"{rank}                    {country_flag}  {country}", value="", inline=False)
-
-                await interaction.response.send_message(embed=embed)
-
-            except:
-                pass
-        else:
-            pass
-
-    except:
-        pass
-
-async def subscribe_to_score(match_description, url, comment):
-    try:
-        await _subscribe_to_score(match_description, url, comment)
+        await _subscribe_to_score(match_description, event, comment)
     except Exception as e:
         print(f"Error in _subscribe_to_score: {e}")
         traceback.print_exc()
-        await comment.edit(content=f"¯\_(ツ)_/¯ Fuck: {e}")
-        await delete_subscription_inner(match_description)
-        raise
+        try:
+            await comment.edit(content=f"¯\\_(ツ)_/¯ Fuck: {e}")
+        except Exception as edit_error:
+            print(f"Error showing subscription error: {edit_error}")
+        await delete_subscription_inner(comment.id)
 
-async def _subscribe_to_score(match_description, url, comment):
-    keep_running = True
-    while keep_running:
+async def _subscribe_to_score(match_description, event, comment):
+    failures = 0
+    while True:
         start_time = datetime.now()
-        retry = 3
-        while retry > 0:
-            try:
-                keep_running = await _subscribe_to_score_inner(match_description, url, comment)
-            except Exception as e:
-                retry -= 1
-                if retry == 0:
-                    raise e
-                await asyncio.sleep(5)
+        try:
+            keep_running, next_poll = await _subscribe_to_score_inner(match_description, event, comment)
+            failures = 0
+        except (discord.NotFound, discord.Forbidden):
+            # Message deleted or we lost access to it, so there's nothing left to update
+            raise
+        except Exception as e:
+            # Probably ESPN or Discord having a moment; keep trying so outages don't end the subscription
+            failures += 1
+            sleep_time = min(5 * 2 ** failures, MAX_RETRY_BACKOFF_S)
+            print(f"Error updating {match_description} (failure {failures}), retrying in {sleep_time}s: {e}")
+            await asyncio.sleep(sleep_time)
+            continue
 
-        elapsed_time = (datetime.now() - start_time).total_seconds()
-        sleep_time = max(REFRESH_INT_S - elapsed_time, 10)
+        if not keep_running:
+            break
+
+        if next_poll:
+            sleep_time = max((next_poll - datetime.now(timezone.utc)).total_seconds(), 10)
+        else:
+            elapsed_time = (datetime.now() - start_time).total_seconds()
+            refresh_interval = SPORT_REFRESH_INT_S.get(event["sport"], REFRESH_INT_S)
+            sleep_time = max(refresh_interval - elapsed_time, 1)
         print(f"sleeping for {sleep_time} seconds")
         await asyncio.sleep(sleep_time)
 
-    await delete_subscription_inner(match_description)
+    await delete_subscription_inner(comment.id)
 
-async def _subscribe_to_score_inner(match_description, url, comment):
-    print(f"in subscribe to score {match_description}: {url}")
-    retry = 3
-    while retry > 0:
-        try:
-            image_path, is_final_score = await screengrab.get_score_image(url)
-            break
-        except Exception as e:
-            retry -= 1
-            if retry == 0:
-                raise e
-            await asyncio.sleep(5)
+async def _subscribe_to_score_inner(match_description, event, comment):
+    print(f"in subscribe to score {match_description}: {event['sport']}/{event['league']} {event['id']}")
+    score = await espn.get_event(event["sport"], event["league"], event["id"])
 
-    if not image_path:
+    if not score:
         await comment.edit(content=f"No score found for '{match_description}'")
-        return False
+        return False, None
 
     print("updating with new score")
-    pst_time = datetime.now().strftime('%H:%M:%S')
-    await comment.edit(content=f"Updated: {pst_time}", attachments=[discord.File(image_path)])
+    next_poll = espn.next_poll_time(score)
+    await comment.edit(content=espn.format_score(score, team_flags, next_poll))
 
-    # try to cleanup image file
-    try:
-        print(f"deleting image file: {image_path}")
-        os.remove(image_path)
-    except Exception as e:
-        print(f"Error deleting image file: {e}")
-
-    if is_final_score:
-        await comment.edit(content="Final score")
-        return False
-
-    return True
+    return not espn.is_final(score), next_poll
 
 @bot.tree.command(name="subscribe", description="Subscribe to live score updates")
 @app_commands.describe(match_description="Match Description (e.g., 'Australia vs India cricket')")
@@ -727,53 +182,121 @@ async def subscribe(interaction: discord.Interaction, match_description: str):
     print(f"Subscribe!: {match_description}")
     await interaction.response.send_message(f"Getting score for '{match_description}'")
     comment = await interaction.original_response()
-    print("Checking if match description is valid")
-    url = await screengrab.match_description_to_sports_score_url(match_description)
 
-    if not url:
-        await comment.edit(content=f"No match found on Google for '{match_description}'???")
+    try:
+        event = await find_event(match_description)
+        if not event:
+            await comment.edit(content=f"No match found on ESPN for '{match_description}'")
+            return
+
+        print(f"Found event: {event}")
+        # Interaction tokens expire after 15 minutes, so edit the message as a normal channel message
+        comment = await interaction.channel.fetch_message(comment.id)
+        await comment.edit(content=f"Found {event['name']}. Will start updating.")
+    except Exception as e:
+        traceback.print_exc()
+        await comment.edit(content=f"Couldn't subscribe to '{match_description}': {e}")
         return
 
-    print(f"Found url: {url}")
+    try:
+        await comment.pin()
+    except Exception as e:
+        print(f"Error pinning comment: {e}")
 
-    await comment.edit(content=f"Found match. Will start updating.")
-    await comment.pin()
+    start_subscription(match_description, event, comment)
 
-    task = bot.loop.create_task(subscribe_to_score(match_description, url, comment))
-    subscribed_tasks[match_description] = task, comment
+def start_subscription(match_description, event, comment):
+    task = bot.loop.create_task(subscribe_to_score(match_description, event, comment))
+    subscribed_tasks[comment.id] = task, comment, event, match_description
+    save_subscriptions()
+
+def save_subscriptions():
+    data = {
+        str(message_id): {"description": match_description, "channel_id": comment.channel.id,
+                          "message_id": message_id, "event": event}
+        for message_id, (_, comment, event, match_description) in subscribed_tasks.items()
+    }
+    try:
+        # Write then rename so a crash mid-write can't leave a truncated file
+        tmp_file = SUBSCRIPTIONS_FILE + ".tmp"
+        with open(tmp_file, "w") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp_file, SUBSCRIPTIONS_FILE)
+    except Exception as e:
+        print(f"Error saving subscriptions: {e}")
+
+def load_subscriptions():
+    try:
+        with open(SUBSCRIPTIONS_FILE) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        print(f"Error loading subscriptions: {e}")
+        return {}
+
+async def resume_subscriptions():
+    # on_ready fires again on reconnect, so skip anything already running
+    for key, sub in load_subscriptions().items():
+        # Older files were keyed by description
+        match_description = sub.get("description", key)
+        if sub["message_id"] in subscribed_tasks:
+            continue
+        try:
+            channel = bot.get_channel(sub["channel_id"]) or await bot.fetch_channel(sub["channel_id"])
+            comment = await channel.fetch_message(sub["message_id"])
+        except Exception as e:
+            print(f"Dropping subscription for {match_description}, can't find its message: {e}")
+            continue
+        print(f"Resuming subscription for {match_description}")
+        start_subscription(match_description, sub["event"], comment)
+    # Persist any dropped subscriptions
+    save_subscriptions()
 
 @bot.tree.command(name="list_subscribed", description="List all current score subscriptions")
 async def list_subscribed(interaction: discord.Interaction):
-    if subscribed_tasks:
+    subscriptions = channel_subscriptions(interaction.channel_id)
+    if subscriptions:
         subscribed_list = "\n".join(
-            f"{index + 1}. {key}" for index, key in enumerate(subscribed_tasks)
+            f"{index + 1}. {match_description}" for index, (_, match_description) in enumerate(subscriptions)
         )
         await interaction.response.send_message(f"Current subscriptions:\n{subscribed_list}")
     else:
-        await interaction.response.send_message("No current subscriptions")
+        await interaction.response.send_message("No current subscriptions in this channel")
+
+def channel_subscriptions(channel_id):
+    """(message id, description) for each subscription in a channel, oldest first."""
+    return [(message_id, match_description)
+            for message_id, (_, comment, _, match_description) in subscribed_tasks.items()
+            if comment.channel.id == channel_id]
 
 @bot.tree.command(name="unsubscribe", description="Unsubscribe from a score update")
 @app_commands.describe(subscription_number="Subscription number")
 async def unsubscribe(interaction: discord.Interaction, subscription_number: int):
-    try:
-        await delete_subscription_inner(list(subscribed_tasks.keys())[subscription_number - 1])
-    except Exception as e:
-        await interaction.response.send_message(f"Error deleting subscription: {e}")
+    subscriptions = channel_subscriptions(interaction.channel_id)
+    if not 1 <= subscription_number <= len(subscriptions):
+        await interaction.response.send_message(f"No subscription #{subscription_number}, see /list_subscribed")
+        return
 
-async def delete_subscription_inner(match_description):
-    print(f"Deleting subscription for {match_description}")
-    if match_description in subscribed_tasks:
-        comment = subscribed_tasks[match_description][1]
+    message_id, match_description = subscriptions[subscription_number - 1]
+    await delete_subscription_inner(message_id)
+    await interaction.response.send_message(f"Unsubscribed from '{match_description}'")
+
+async def delete_subscription_inner(message_id):
+    if message_id in subscribed_tasks:
+        task, comment, _, match_description = subscribed_tasks[message_id]
+        print(f"Deleting subscription for {match_description}")
         try:
             await comment.unpin()
         except Exception as e:
             print(f"Error unpinning comment: {e}")
 
         try:
-            subscribed_tasks[match_description][0].cancel()
+            task.cancel()
         except Exception as e:
             print(f"Error deleting subscription: {e}")
 
-        del subscribed_tasks[match_description]
+        del subscribed_tasks[message_id]
+        save_subscriptions()
 
 bot.run(DISCORD_TOKEN)
