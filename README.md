@@ -1,49 +1,37 @@
-This Python script is for a Discord bot that provides live cricket scores using the Discord API, the discord.ext library, and web scraping with BeautifulSoup.
+# Cricbot
 
-Here's a breakdown of the code:
+A Discord bot for live sports scores: cricket first, but anything on ESPN's scoreboard works (WNBA, NFL, soccer, ...).
 
-1. It imports the necessary libraries, including Discord's API, requests for making HTTP requests, and BeautifulSoup for parsing HTML.
+## Commands
 
-2. It defines your Discord bot token and sets up the bot with the command prefix as / and all Discord intents enabled.
+- `/live_score <match>`: post the current score of a match, e.g. `/live_score fever vs aces` or `/live_score india`.
+- `/subscribe <match>`: post and pin a message that updates with the live score every 30s until the match ends.
+  Multi-day cricket matches pause overnight at stumps and pick up shortly before the next day's play.
+- `/list_subscribed`, `/unsubscribe <number>`: manage subscriptions.
+- `/batters_rankings`, `/bowlers_rankings`, `/allrounders_rankings`, `/team_rankings <format>`: ICC top 10 (via the Cricbuzz RapidAPI).
+- `/help`
 
-3. There are several event handlers:
+## How scores work
 
-	on_guild_join and on_guild_remove events update the bot's activity status when it joins or leaves a server.
+- `espn.py` reads ESPN's free scoreboard API (`site.web.api.espn.com/apis/v2/scoreboard/header`) and formats the Discord message.
+- `muse.py` asks `muse-spark-1.3-contributor` (Meta Model API) which of today's ESPN events a description like "fever vs aces" means.
+  It's only used once per command; updates poll ESPN directly.
+- Subscriptions are saved to `subscriptions.json` and resumed when the bot restarts.
 
-	update_activity updates the bot's "watching" status, indicating how many servers it's in.
+## Setup
 
-	on_ready event prints a message when the bot is logged in and updates its activity.
+Requires Python 3.14 (see `.python-version`).
 
-4. The script defines a command /live_score using the @bot.tree.command decorator. 
-   This command takes a team_short_name argument, which is used to fetch live cricket scores from 'https://www.cricbuzz.com/' 
-   and display them in a Discord message.
+Add these to `.env`:
 
-5. Inside the /live_score command, it:
-
-	Scrapes the Cricbuzz website to find live cricket matches.
-
-	Retrieves match data, including teams, scores, run rates, wickets, and more.
-
-	Formats this information into a readable Discord embed message.
-
-	Provides flags for some national teams based on their abbreviations.
-
-6. The script also defines a /invite command to get an invite link for the bot and a /help command to display information about the bot and its available commands.
-
-7. Finally, it runs the bot using your Discord token.
-
-# Setup
-
-Get a Discord token: https://discord.com/developers/applications 
-Set `DISCORD_TOKEN="<token>"` in .env
-
-Get a Rapid API token
-Set `RAPID_API_KEY="<key>" in .env
-
-Get a Meta Model API key (used by `/subscribe` to match a description like "fever vs aces" to an ESPN game with `muse-spark-1.3-contributor`; live scores come from ESPN's free scoreboard API): https://dev.meta.ai
-Set `MUSE_API_KEY="<key>"` in .env
+- `DISCORD_TOKEN="<token>"` from https://discord.com/developers/applications.
+  The bot needs Send Messages, Read Message History and Manage Messages (to pin) in the channels it's used in.
+- `MUSE_API_KEY="<key>"` from https://dev.meta.ai
+- `RAPID_API_KEY="<key>"` for the Cricbuzz RapidAPI (rankings commands only)
 
 ```
 python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+python main.py
 ```
