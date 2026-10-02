@@ -16,6 +16,8 @@ import muse
 load_dotenv()
 
 REFRESH_INT_S = 30
+# Sports whose scores change fast enough to be worth polling more often
+SPORT_REFRESH_INT_S = {"basketball": 5}
 MAX_RETRY_BACKOFF_S = 600
 SUBSCRIPTIONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "subscriptions.json")
 
@@ -153,7 +155,8 @@ async def _subscribe_to_score(match_description, event, comment):
             sleep_time = max((next_poll - datetime.now(timezone.utc)).total_seconds(), 10)
         else:
             elapsed_time = (datetime.now() - start_time).total_seconds()
-            sleep_time = max(REFRESH_INT_S - elapsed_time, 10)
+            refresh_interval = SPORT_REFRESH_INT_S.get(event["sport"], REFRESH_INT_S)
+            sleep_time = max(refresh_interval - elapsed_time, 1)
         print(f"sleeping for {sleep_time} seconds")
         await asyncio.sleep(sleep_time)
 
