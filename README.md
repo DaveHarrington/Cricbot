@@ -40,7 +40,7 @@ Set `DISCORD_TOKEN="<token>"` in .env
 Get a Rapid API token
 Set `RAPID_API_KEY="<key>" in .env
 
-Get a Meta Model API key (used by `/subscribe` to look up live scores with `muse-spark-1.3-contributor` + web search): https://dev.meta.ai
+Get a Meta Model API key (used by `/subscribe` to match a description like "fever vs aces" to an ESPN game with `muse-spark-1.3-contributor`; live scores come from ESPN's free scoreboard API): https://dev.meta.ai
 Set `MUSE_API_KEY="<key>"` in .env
 
 ```

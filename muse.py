@@ -1,6 +1,7 @@
 import os
 import re
 import json
+from datetime import datetime
 
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
@@ -19,81 +20,24 @@ def client():
         _client = AsyncOpenAI(base_url="https://api.meta.ai/v1", api_key=os.getenv("MUSE_API_KEY"))
     return _client
 
-# Match states where the score will not change again
-FINAL_STATES = {"result", "abandoned"}
 
-INSTRUCTIONS = """You report live sports scores. Use web search to find the CURRENT state of the \
-match the user describes (prefer live scorecards such as Cricbuzz, ESPNcricinfo or official \
-sources), then reply with a single JSON object matching the schema and nothing else.
+INSTRUCTIONS = """You match a user's description of a sports match to one event from a list of \
+today's events on ESPN. Descriptions are informal: nicknames ("fever vs aces"), abbreviations \
+("ind v aus"), or a sport hint ("england cricket").
 
-- found: false if you cannot identify a single specific match that is live, recently finished or \
-about to start. When false, other fields may be null/empty.
-- innings: every innings so far, in batting order. For cricket, runs/wickets/overs are the innings \
-total (overs as a string such as "42.3"). For other sports, put the team's points in runs and use \
-null for wickets and overs.
-- state: "upcoming", "live", "break" (innings break, lunch, tea, rain delay), "stumps", "result" \
-or "abandoned".
-- status_text: the short official status line, e.g. "India need 45 runs from 30 balls", \
-"Australia won by 5 wickets", "Day 2: Stumps - England lead by 120 runs".
-- batters: the batters currently at the crease (striker first); empty list if none.
-- bowler: the current bowler; null if none.
-Never guess numbers. If a value is not available, use null."""
+Reply with the id of the single event that best matches, or null if none plausibly matches. If \
+several match, prefer one that is live ("in"), then upcoming ("pre"), then finished ("post"), \
+and prefer senior men's/main teams unless the description says otherwise."""
 
-TEAM = {
+MATCH_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["team", "runs", "wickets", "overs", "declared"],
-    "properties": {
-        "team": {"type": "string"},
-        "runs": {"type": ["integer", "null"]},
-        "wickets": {"type": ["integer", "null"]},
-        "overs": {"type": ["string", "null"]},
-        "declared": {"type": "boolean"},
-    },
-}
-
-SCORE_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["found", "title", "series", "state", "innings", "status_text", "batters", "bowler"],
-    "properties": {
-        "found": {"type": "boolean"},
-        "title": {"type": ["string", "null"], "description": "e.g. 'Australia vs India, 2nd ODI'"},
-        "series": {"type": ["string", "null"]},
-        "state": {"type": "string", "enum": ["upcoming", "live", "break", "stumps", "result", "abandoned"]},
-        "innings": {"type": "array", "items": TEAM},
-        "status_text": {"type": ["string", "null"]},
-        "batters": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["name", "runs", "balls"],
-                "properties": {
-                    "name": {"type": "string"},
-                    "runs": {"type": ["integer", "null"]},
-                    "balls": {"type": ["integer", "null"]},
-                },
-            },
-        },
-        "bowler": {
-            "type": ["object", "null"],
-            "additionalProperties": False,
-            "required": ["name", "overs", "maidens", "runs", "wickets"],
-            "properties": {
-                "name": {"type": "string"},
-                "overs": {"type": ["string", "null"]},
-                "maidens": {"type": ["integer", "null"]},
-                "runs": {"type": ["integer", "null"]},
-                "wickets": {"type": ["integer", "null"]},
-            },
-        },
-    },
+    "required": ["event_id"],
+    "properties": {"event_id": {"type": ["string", "null"]}},
 }
 
 
 def _parse_json(text):
-    # Search-grounded answers can have a Sources list appended, so pull out the JSON object
     try:
         return json.loads(text)
     except json.JSONDecodeError:
@@ -103,79 +47,28 @@ def _parse_json(text):
         return json.loads(match.group(0))
 
 
-async def get_score(match_description):
+async def match_event(match_description, events):
     """
-    Ask Muse Spark (with web search) for the current score of a match.
+    Ask Muse Spark which of the given ESPN events the description refers to.
 
-    Returns a dict matching SCORE_SCHEMA.
+    Returns the matching event dict, or None.
     """
-    print(f"Asking {MODEL} for score: {match_description}")
+    if not events:
+        return None
+
+    listing = "\n".join(
+        f"{e['id']} | {e['sport']} / {e['league_name']} | {e['name']} | {' vs '.join(e['teams'])} | {e['status']} | {e['date']}"
+        for e in events
+    )
+    print(f"Asking {MODEL} to match '{match_description}' against {len(events)} events")
     resp = await client().responses.create(
         model=MODEL,
         instructions=INSTRUCTIONS,
-        input=f"Current score: {match_description}",
-        tools=[{"type": "web_search"}],
+        input=f"Now: {datetime.now().astimezone().isoformat(timespec='minutes')}\n"
+              f"Description: {match_description}\n\n"
+              f"Events (id | sport / league | name | teams | status | start):\n{listing}",
         reasoning={"effort": "low"},
-        text={"format": {"type": "json_schema", "name": "match_score", "schema": SCORE_SCHEMA, "strict": True}},
+        text={"format": {"type": "json_schema", "name": "event_match", "schema": MATCH_SCHEMA, "strict": True}},
     )
-    return _parse_json(resp.output_text)
-
-
-def is_final(score):
-    return score["state"] in FINAL_STATES
-
-
-STATE_LABELS = {
-    "upcoming": "🕒 Upcoming",
-    "live": "🔴 LIVE",
-    "break": "⏸️ Break",
-    "stumps": "🌙 Stumps",
-    "result": "🏁 Result",
-    "abandoned": "🌧️ Abandoned",
-}
-
-
-def _innings_line(inn, flags):
-    # Whole-word match so e.g. "India" doesn't flag "Indiana Fever"
-    flag = next((f for name, f in flags.items()
-                 if re.search(rf"\b{re.escape(name)}\b", inn["team"], re.IGNORECASE)), "")
-    team = f"{flag} {inn['team']}".strip()
-    if inn["runs"] is None:
-        return f"{team}  `Yet to bat`"
-    score = str(inn["runs"])
-    if inn["wickets"] is not None and inn["wickets"] < 10:
-        score += f"/{inn['wickets']}"
-    if inn["declared"]:
-        score += "d"
-    if inn["overs"]:
-        score += f" ({inn['overs']} ov)"
-    return f"{team}  `{score}`"
-
-
-def format_score(score, updated, flags=None):
-    """Render a score dict as a Discord message. Always the same layout so updates don't jump around."""
-    lines = [f"**{score['title'] or 'Match'}**"]
-    if score["series"]:
-        lines[0] += f"  ·  {score['series']}"
-    lines.append(STATE_LABELS.get(score["state"], score["state"]))
-    lines.append("")
-    lines += [_innings_line(inn, flags or {}) for inn in score["innings"]]
-    if score["status_text"]:
-        lines += ["", f"*{score['status_text']}*"]
-
-    if score["state"] == "live":
-        if score["batters"]:
-            batters = []
-            for i, b in enumerate(score["batters"]):
-                runs = "?" if b["runs"] is None else b["runs"]
-                balls = f" ({b['balls']})" if b["balls"] is not None else ""
-                batters.append(f"{b['name']} {runs}{'*' if i == 0 else ''}{balls}")
-            lines.append(f"🏏 {'  ·  '.join(batters)}")
-        bowler = score["bowler"]
-        if bowler:
-            figures = "-".join("?" if v is None else str(v)
-                               for v in (bowler["overs"], bowler["maidens"], bowler["runs"], bowler["wickets"]))
-            lines.append(f"🎯 {bowler['name']} {figures}")
-
-    lines += ["", f"-# Updated {updated}"]
-    return "\n".join(lines)
+    event_id = _parse_json(resp.output_text)["event_id"]
+    return next((e for e in events if e["id"] == event_id), None)

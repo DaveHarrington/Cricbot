@@ -2,7 +2,7 @@ import os
 import re
 import asyncio
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 
 import requests
 from bs4 import BeautifulSoup
@@ -12,6 +12,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+import espn
 import muse
 
 load_dotenv()
@@ -656,24 +657,24 @@ async def rankings(interaction: discord.Interaction, format: str):
     except:
         pass
 
-async def subscribe_to_score(match_description, comment):
+async def subscribe_to_score(match_description, event, comment):
     try:
-        await _subscribe_to_score(match_description, comment)
+        await _subscribe_to_score(match_description, event, comment)
     except Exception as e:
         print(f"Error in _subscribe_to_score: {e}")
         traceback.print_exc()
-        await comment.edit(content=f"¯\_(ツ)_/¯ Fuck: {e}")
+        await comment.edit(content=f"¯\\_(ツ)_/¯ Fuck: {e}")
         await delete_subscription_inner(match_description)
         raise
 
-async def _subscribe_to_score(match_description, comment):
+async def _subscribe_to_score(match_description, event, comment):
     keep_running = True
     while keep_running:
         start_time = datetime.now()
         retry = 3
         while retry > 0:
             try:
-                keep_running = await _subscribe_to_score_inner(match_description, comment)
+                keep_running, next_poll = await _subscribe_to_score_inner(match_description, event, comment)
                 break
             except Exception as e:
                 retry -= 1
@@ -681,26 +682,34 @@ async def _subscribe_to_score(match_description, comment):
                     raise e
                 await asyncio.sleep(5)
 
-        elapsed_time = (datetime.now() - start_time).total_seconds()
-        sleep_time = max(REFRESH_INT_S - elapsed_time, 10)
+        if not keep_running:
+            break
+
+        if next_poll:
+            sleep_time = max((next_poll - datetime.now(timezone.utc)).total_seconds(), 10)
+        else:
+            elapsed_time = (datetime.now() - start_time).total_seconds()
+            sleep_time = max(REFRESH_INT_S - elapsed_time, 10)
         print(f"sleeping for {sleep_time} seconds")
         await asyncio.sleep(sleep_time)
 
     await delete_subscription_inner(match_description)
 
-async def _subscribe_to_score_inner(match_description, comment):
-    print(f"in subscribe to score {match_description}")
-    score = await muse.get_score(match_description)
+async def _subscribe_to_score_inner(match_description, event, comment):
+    print(f"in subscribe to score {match_description}: {event['sport']}/{event['league']} {event['id']}")
+    score = await espn.get_event(event["sport"], event["league"], event["id"])
 
-    if not score["found"]:
+    if not score:
         await comment.edit(content=f"No score found for '{match_description}'")
-        return False
+        return False, None
 
     print("updating with new score")
     pst_time = datetime.now().strftime('%H:%M:%S')
-    await comment.edit(content=muse.format_score(score, pst_time, team_flag_mapping_2))
+    next_poll = espn.next_poll_time(score)
+    next_update = next_poll.astimezone().strftime('%H:%M') if next_poll else None
+    await comment.edit(content=espn.format_score(score, pst_time, team_flag_mapping_2, next_update))
 
-    return not muse.is_final(score)
+    return not espn.is_final(score), next_poll
 
 @bot.tree.command(name="subscribe", description="Subscribe to live score updates")
 @app_commands.describe(match_description="Match Description (e.g., 'Australia vs India cricket')")
@@ -708,9 +717,17 @@ async def subscribe(interaction: discord.Interaction, match_description: str):
     print(f"Subscribe!: {match_description}")
     await interaction.response.send_message(f"Getting score for '{match_description}'")
     comment = await interaction.original_response()
+
+    event = await muse.match_event(match_description, await espn.list_events())
+    if not event:
+        await comment.edit(content=f"No match found on ESPN for '{match_description}'")
+        return
+
+    print(f"Found event: {event}")
+    await comment.edit(content=f"Found {event['name']}. Will start updating.")
     await comment.pin()
 
-    task = bot.loop.create_task(subscribe_to_score(match_description, comment))
+    task = bot.loop.create_task(subscribe_to_score(match_description, event, comment))
     subscribed_tasks[match_description] = task, comment
 
 @bot.tree.command(name="list_subscribed", description="List all current score subscriptions")
