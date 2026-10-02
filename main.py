@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import asyncio
 import traceback
 from datetime import datetime, timezone
@@ -18,6 +19,7 @@ import muse
 load_dotenv()
 
 REFRESH_INT_S = 30
+SUBSCRIPTIONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "subscriptions.json")
 
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 RAPID_API_KEY = os.getenv('RAPID_API_KEY')
@@ -77,7 +79,7 @@ team_flag_mapping_2 = {
 
 bot = commands.Bot(command_prefix='/', intents=discord.Intents.all())
 
-# Global dictionary to store tasks
+# Global dictionary to store tasks: match_description -> (task, comment, event)
 subscribed_tasks = {}
 
 @bot.event
@@ -101,6 +103,7 @@ async def on_ready():
     print(f'Logged in as {bot.user.name}')
     await update_activity()
     await bot.tree.sync()
+    await resume_subscriptions()
 
 # livescore
 
@@ -724,11 +727,57 @@ async def subscribe(interaction: discord.Interaction, match_description: str):
         return
 
     print(f"Found event: {event}")
+    # Interaction tokens expire after 15 minutes, so edit the message as a normal channel message
+    comment = await interaction.channel.fetch_message(comment.id)
     await comment.edit(content=f"Found {event['name']}. Will start updating.")
     await comment.pin()
 
+    start_subscription(match_description, event, comment)
+
+def start_subscription(match_description, event, comment):
     task = bot.loop.create_task(subscribe_to_score(match_description, event, comment))
-    subscribed_tasks[match_description] = task, comment
+    subscribed_tasks[match_description] = task, comment, event
+    save_subscriptions()
+
+def save_subscriptions():
+    data = {
+        match_description: {"channel_id": comment.channel.id, "message_id": comment.id, "event": event}
+        for match_description, (_, comment, event) in subscribed_tasks.items()
+    }
+    try:
+        # Write then rename so a crash mid-write can't leave a truncated file
+        tmp_file = SUBSCRIPTIONS_FILE + ".tmp"
+        with open(tmp_file, "w") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp_file, SUBSCRIPTIONS_FILE)
+    except Exception as e:
+        print(f"Error saving subscriptions: {e}")
+
+def load_subscriptions():
+    try:
+        with open(SUBSCRIPTIONS_FILE) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        print(f"Error loading subscriptions: {e}")
+        return {}
+
+async def resume_subscriptions():
+    # on_ready fires again on reconnect, so skip anything already running
+    for match_description, sub in load_subscriptions().items():
+        if match_description in subscribed_tasks:
+            continue
+        try:
+            channel = bot.get_channel(sub["channel_id"]) or await bot.fetch_channel(sub["channel_id"])
+            comment = await channel.fetch_message(sub["message_id"])
+        except Exception as e:
+            print(f"Dropping subscription for {match_description}, can't find its message: {e}")
+            continue
+        print(f"Resuming subscription for {match_description}")
+        start_subscription(match_description, sub["event"], comment)
+    # Persist any dropped subscriptions
+    save_subscriptions()
 
 @bot.tree.command(name="list_subscribed", description="List all current score subscriptions")
 async def list_subscribed(interaction: discord.Interaction):
@@ -763,5 +812,6 @@ async def delete_subscription_inner(match_description):
             print(f"Error deleting subscription: {e}")
 
         del subscribed_tasks[match_description]
+        save_subscriptions()
 
 bot.run(DISCORD_TOKEN)
