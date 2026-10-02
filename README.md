@@ -7,8 +7,7 @@ A Discord bot for live sports scores: cricket first, but anything on ESPN's scor
 - `/live_score <match>`: post the current score of a match, e.g. `/live_score fever vs aces` or `/live_score india`.
 - `/subscribe <match>`: post and pin a message that updates with the live score every 30s until the match ends.
   Multi-day cricket matches pause overnight at stumps and pick up shortly before the next day's play.
-- `/list_subscribed`, `/unsubscribe <number>`: manage subscriptions.
-- `/batters_rankings`, `/bowlers_rankings`, `/allrounders_rankings`, `/team_rankings <format>`: ICC top 10 (via the Cricbuzz RapidAPI).
+- `/list_subscribed`, `/unsubscribe <number>`: manage the subscriptions in the current channel.
 - `/help`
 
 ## How scores work
@@ -27,7 +26,6 @@ Add these to `.env`:
 - `DISCORD_TOKEN="<token>"` from https://discord.com/developers/applications.
   The bot needs Send Messages, Read Message History and Manage Messages (to pin) in the channels it's used in.
 - `MUSE_API_KEY="<key>"` from https://dev.meta.ai
-- `RAPID_API_KEY="<key>"` for the Cricbuzz RapidAPI (rankings commands only)
 
 ```
 python -m venv .venv

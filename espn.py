@@ -1,4 +1,5 @@
 import re
+import time
 import asyncio
 from datetime import datetime, timedelta, timezone
 
@@ -68,6 +69,10 @@ async def list_events():
     async with aiohttp.ClientSession() as session:
         headers = await asyncio.gather(*(_fetch_header(session, q) for q in CANDIDATE_QUERIES),
                                        return_exceptions=True)
+    errors = [h for h in headers if isinstance(h, Exception)]
+    if len(errors) == len(headers):
+        raise RuntimeError(f"Couldn't reach ESPN: {errors[0]}")
+
     events = {}
     for header in headers:
         if isinstance(header, Exception):
@@ -77,7 +82,8 @@ async def list_events():
             events.setdefault(event["id"], {
                 "id": event["id"],
                 "sport": sport,
-                "league": league["slug"],
+                # Some cricket leagues have an empty slug, and the scoreboard takes the id instead
+                "league": league.get("slug") or league["id"],
                 "league_name": league.get("shortName") or league.get("name"),
                 "name": event["name"],
                 "date": event.get("date"),
@@ -151,7 +157,7 @@ def _team_line(competitor, flags):
     return f"{team}  `{score}`"
 
 
-def format_score(event, updated, flags=None, next_update=None):
+def format_score(event, flags=None, next_poll=None):
     """Render an ESPN event as a Discord message. Always the same layout so updates don't jump around."""
     title = f"{SPORT_EMOJI.get(event.get('sport'), '🏆')} **{event['name']}**"
     context = [event.get("league_name"), event.get("note") or event.get("title")]
@@ -170,8 +176,9 @@ def format_score(event, updated, flags=None, next_update=None):
     if note:
         lines += ["", f"*{note}*"]
 
-    footer = f"-# Updated {updated}"
-    if next_update:
-        footer += f" · next update ~{next_update}"
+    # Discord timestamps show in each viewer's own time zone; "R" is relative ("2 minutes ago")
+    footer = f"-# Updated <t:{int(time.time())}:R>"
+    if next_poll:
+        footer += f" · next update ~<t:{int(next_poll.timestamp())}:t>"
     lines += ["", footer]
     return "\n".join(lines)
