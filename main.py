@@ -53,6 +53,8 @@ bot = commands.Bot(command_prefix='/', intents=discord.Intents.all())
 
 # Active subscriptions: message id -> (task, comment, event, match_description)
 subscribed_tasks = {}
+# Channels where we lack permission to pin
+pin_forbidden = set()
 
 @bot.event
 async def on_guild_join(guild):
@@ -172,7 +174,18 @@ async def _subscribe_to_score_inner(match_description, event, comment):
 
     print("updating with new score")
     next_poll = espn.next_poll_time(score)
-    await comment.edit(content=espn.format_score(score, team_flags, next_poll))
+    comment = await comment.edit(content=espn.format_score(score, team_flags, next_poll))
+    # Pinning disabled: CricBot lacks Pin Messages. Uncomment once it has it.
+    # # Keep a game pinned only while it's being played
+    # if score.get("status") == "in" and not comment.pinned and comment.channel.id not in pin_forbidden:
+    #     try:
+    #         await comment.pin()
+    #     except discord.Forbidden as e:
+    #         # Don't retry every poll; restart the bot after granting Pin Messages
+    #         pin_forbidden.add(comment.channel.id)
+    #         print(f"Can't pin in #{comment.channel}: {e}")
+    #     except Exception as e:
+    #         print(f"Error pinning comment: {e}")
 
     return not espn.is_final(score), next_poll
 
@@ -197,11 +210,6 @@ async def subscribe(interaction: discord.Interaction, match_description: str):
         traceback.print_exc()
         await comment.edit(content=f"Couldn't subscribe to '{match_description}': {e}")
         return
-
-    try:
-        await comment.pin()
-    except Exception as e:
-        print(f"Error pinning comment: {e}")
 
     start_subscription(match_description, event, comment)
 
@@ -252,6 +260,26 @@ async def resume_subscriptions():
         start_subscription(match_description, sub["event"], comment)
     # Persist any dropped subscriptions
     save_subscriptions()
+    # await unpin_old_matches()  # disabled with pinning, see above
+
+async def unpin_old_matches():
+    """Unpin our own pinned messages that aren't a running subscription, e.g. finished or dropped matches."""
+    for guild in bot.guilds:
+        for channel in guild.text_channels:
+            if not channel.permissions_for(guild.me).read_message_history:
+                continue
+            try:
+                pins = [message async for message in channel.pins()]
+            except Exception as e:
+                print(f"Can't read pins in #{channel.name}: {e}")
+                continue
+            for message in pins:
+                if message.author.id == bot.user.id and message.id not in subscribed_tasks:
+                    print(f"Unpinning old match message {message.id} in #{channel.name}")
+                    try:
+                        await message.unpin()
+                    except Exception as e:
+                        print(f"Error unpinning {message.id}: {e}")
 
 @bot.tree.command(name="list_subscribed", description="List all current score subscriptions")
 async def list_subscribed(interaction: discord.Interaction):
