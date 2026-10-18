@@ -135,6 +135,10 @@ def next_poll_time(event, now=None):
 
 def _status_line(event):
     detail = event.get("summary") or ""
+    if event.get("status") == "pre" and event.get("date"):
+        # ESPN's summary has the start in US Eastern; a Discord timestamp shows in each viewer's own time zone
+        start = datetime.fromisoformat(event["date"].replace("Z", "+00:00"))
+        detail = f"<t:{int(start.timestamp())}:R>"  # relative, e.g. "in 3 hours"
     label = {"pre": "🕒 Upcoming", "in": "🔴 LIVE", "post": "🏁 Final"}.get(event.get("status"), "")
     if event.get("status") == "in" and detail.lower() in PAUSED:
         label, detail = f"⏸️ {detail}", ""
