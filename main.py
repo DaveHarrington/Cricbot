@@ -20,6 +20,8 @@ REFRESH_INT_S = 30
 SPORT_REFRESH_INT_S = {"basketball": 5}
 MAX_RETRY_BACKOFF_S = 600
 SUBSCRIPTIONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "subscriptions.json")
+DELAYS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "delays.json")
+MAX_DELAY_S = 600
 
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 
@@ -55,6 +57,8 @@ bot = commands.Bot(command_prefix='/', intents=discord.Intents.all())
 subscribed_tasks = {}
 # Channels where we lack permission to pin
 pin_forbidden = set()
+# Channel id -> seconds to hold scores back, to match a TV stream that's behind live
+channel_delays = {}
 
 @bot.event
 async def on_guild_join(guild):
@@ -116,7 +120,7 @@ async def live_score(interaction: discord.Interaction, match_description: str):
 async def help_command(interaction: discord.Interaction):
     await interaction.response.send_message(
         embed=discord.Embed(title="Stay in the game with Cricbot: Your LIVE cricket score companion!",
-                            description=f"**Cricbot is used in over `{len(bot.guilds)}` servers, where cricket fans from all over the world always stay in the game.\n\nCommands:\n\n`/live_score` to get the current score of a match.\n\n`/subscribe` to pin a message that keeps updating with the live score.\n\n`/list_subscribed` and `/unsubscribe` to manage this channel's subscriptions.\n\n`/help` to display this message.**", color=discord.Color.random())
+                            description=f"**Cricbot is used in over `{len(bot.guilds)}` servers, where cricket fans from all over the world always stay in the game.\n\nCommands:\n\n`/live_score` to get the current score of a match.\n\n`/subscribe` to pin a message that keeps updating with the live score.\n\n`/list_subscribed` and `/unsubscribe` to manage this channel's subscriptions.\n\n`/delay` to hold this channel's scores back so they don't spoil a TV stream that's behind live.\n\n`/help` to display this message.**", color=discord.Color.random())
     )
 
 
@@ -132,12 +136,67 @@ async def subscribe_to_score(match_description, event, comment):
             print(f"Error showing subscription error: {edit_error}")
         await delete_subscription_inner(comment.id)
 
+class DelayedEditor:
+    """Edits a score message, holding each update back by the channel's /delay."""
+
+    def __init__(self, comment):
+        self.comment = comment
+        self.latest = 0  # number of the newest update queued
+        self.shown = 0  # number of the newest update on screen
+        self.pending = set()
+        self.error = None
+
+    async def edit(self, content, delay=0):
+        if self.error:
+            raise self.error
+        self.latest += 1
+        if not delay:
+            await self._show(self.latest, content)
+            return
+        task = asyncio.create_task(self._show_later(self.latest, content, delay))
+        self.pending.add(task)
+        task.add_done_callback(self.pending.discard)
+
+    async def _show_later(self, number, content, delay):
+        await asyncio.sleep(delay)
+        try:
+            await self._show(number, content)
+        except (discord.NotFound, discord.Forbidden) as e:
+            # Raised from the next edit() so the subscription ends
+            self.error = e
+        except Exception as e:
+            print(f"Error showing delayed score: {e}")
+
+    async def _show(self, number, content):
+        # After the delay is shortened a newer update can come due first; don't go backwards
+        if number > self.shown:
+            self.shown = number
+            await self.comment.edit(content=content)
+
+    async def drain(self):
+        """Wait for every held-back update to be shown."""
+        await asyncio.gather(*self.pending)
+
+    def cancel(self):
+        for task in self.pending:
+            task.cancel()
+
 async def _subscribe_to_score(match_description, event, comment):
+    editor = DelayedEditor(comment)
+    try:
+        await _poll_score(match_description, event, editor)
+        # Let the final score through the delay before ending the subscription
+        await editor.drain()
+    finally:
+        editor.cancel()
+    await delete_subscription_inner(comment.id)
+
+async def _poll_score(match_description, event, editor):
     failures = 0
     while True:
         start_time = datetime.now()
         try:
-            keep_running, next_poll = await _subscribe_to_score_inner(match_description, event, comment)
+            keep_running, next_poll = await _subscribe_to_score_inner(match_description, event, editor)
             failures = 0
         except (discord.NotFound, discord.Forbidden):
             # Message deleted or we lost access to it, so there's nothing left to update
@@ -151,7 +210,7 @@ async def _subscribe_to_score(match_description, event, comment):
             continue
 
         if not keep_running:
-            break
+            return
 
         if next_poll:
             sleep_time = max((next_poll - datetime.now(timezone.utc)).total_seconds(), 10)
@@ -162,28 +221,30 @@ async def _subscribe_to_score(match_description, event, comment):
         print(f"sleeping for {sleep_time} seconds")
         await asyncio.sleep(sleep_time)
 
-    await delete_subscription_inner(comment.id)
-
-async def _subscribe_to_score_inner(match_description, event, comment):
+async def _subscribe_to_score_inner(match_description, event, editor):
     print(f"in subscribe to score {match_description}: {event['sport']}/{event['league']} {event['id']}")
     score = await espn.get_event(event["sport"], event["league"], event["id"])
 
     if not score:
-        await comment.edit(content=f"No score found for '{match_description}'")
+        await editor.edit(f"No score found for '{match_description}'")
         return False, None
 
     print("updating with new score")
     next_poll = espn.next_poll_time(score)
-    comment = await comment.edit(content=espn.format_score(score, team_flags, next_poll))
+    content = espn.format_score(score, team_flags, next_poll)
+    delay = channel_delays.get(editor.comment.channel.id, 0)
+    if delay:
+        content += f" · ⏱ {delay}s behind live"
+    await editor.edit(content, delay)
     # Pinning disabled: CricBot lacks Pin Messages. Uncomment once it has it.
     # # Keep a game pinned only while it's being played
-    # if score.get("status") == "in" and not comment.pinned and comment.channel.id not in pin_forbidden:
+    # if score.get("status") == "in" and not editor.comment.pinned and editor.comment.channel.id not in pin_forbidden:
     #     try:
-    #         await comment.pin()
+    #         await editor.comment.pin()
     #     except discord.Forbidden as e:
     #         # Don't retry every poll; restart the bot after granting Pin Messages
-    #         pin_forbidden.add(comment.channel.id)
-    #         print(f"Can't pin in #{comment.channel}: {e}")
+    #         pin_forbidden.add(editor.comment.channel.id)
+    #         print(f"Can't pin in #{editor.comment.channel}: {e}")
     #     except Exception as e:
     #         print(f"Error pinning comment: {e}")
 
@@ -281,6 +342,37 @@ async def unpin_old_matches():
                     except Exception as e:
                         print(f"Error unpinning {message.id}: {e}")
 
+def save_delays():
+    try:
+        tmp_file = DELAYS_FILE + ".tmp"
+        with open(tmp_file, "w") as f:
+            json.dump({str(channel_id): delay for channel_id, delay in channel_delays.items()}, f, indent=2)
+        os.replace(tmp_file, DELAYS_FILE)
+    except Exception as e:
+        print(f"Error saving delays: {e}")
+
+def load_delays():
+    try:
+        with open(DELAYS_FILE) as f:
+            return {int(channel_id): delay for channel_id, delay in json.load(f).items()}
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        print(f"Error loading delays: {e}")
+        return {}
+
+@bot.tree.command(name="delay", description="Hold this channel's scores back to match a TV stream that's behind live")
+@app_commands.describe(seconds=f"Seconds behind live, 0 to turn off (max {MAX_DELAY_S})")
+async def delay(interaction: discord.Interaction, seconds: app_commands.Range[int, 0, MAX_DELAY_S]):
+    if seconds:
+        channel_delays[interaction.channel_id] = seconds
+        message = f"Scores in this channel now run {seconds}s behind live"
+    else:
+        channel_delays.pop(interaction.channel_id, None)
+        message = "Scores in this channel are live again"
+    save_delays()
+    await interaction.response.send_message(message)
+
 @bot.tree.command(name="list_subscribed", description="List all current score subscriptions")
 async def list_subscribed(interaction: discord.Interaction):
     subscriptions = channel_subscriptions(interaction.channel_id)
@@ -327,4 +419,5 @@ async def delete_subscription_inner(message_id):
         del subscribed_tasks[message_id]
         save_subscriptions()
 
+channel_delays.update(load_delays())
 bot.run(DISCORD_TOKEN)

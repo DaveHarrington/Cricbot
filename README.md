@@ -8,6 +8,7 @@ A Discord bot for live sports scores: cricket first, but anything on ESPN's scor
 - `/subscribe <match>`: post and pin a message that updates with the live score until the match ends (every 5s for basketball, 30s otherwise).
   Multi-day cricket matches pause overnight at stumps and pick up shortly before the next day's play.
 - `/list_subscribed`, `/unsubscribe <number>`: manage the subscriptions in the current channel.
+- `/delay <seconds>`: hold the channel's subscription updates back that many seconds (up to 600), so they don't spoil a TV stream that's behind live. `/delay 0` turns it off. Saved in `delays.json`.
 - `/help`
 
 ## How scores work
