@@ -3,3 +3,5 @@
 .venv
 subscriptions.json
 subscriptions.json.tmp
+delays.json
+delays.json.tmp
