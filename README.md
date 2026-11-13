@@ -14,6 +14,7 @@ A Discord bot for live sports scores: cricket first, but anything on ESPN's scor
 ## How scores work
 
 - `espn.py` reads ESPN's free scoreboard API (`site.web.api.espn.com/apis/v2/scoreboard/header`) and formats the Discord message.
+  For live cricket it also reads the match summary (`apis/site/v2/sports/cricket/<league>/summary`) to show the batters at the crease and the current and previous bowlers.
 - `muse.py` asks `muse-spark-1.3-contributor` (Meta Model API) which of today's ESPN events a description like "fever vs aces" means.
   It's only used once per command; updates poll ESPN directly.
 - Subscriptions are saved to `subscriptions.json` and resumed when the bot restarts.

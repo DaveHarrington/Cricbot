@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import aiohttp
 
 HEADER_URL = "https://site.web.api.espn.com/apis/v2/scoreboard/header"
+SUMMARY_URL = "https://site.web.api.espn.com/apis/site/v2/sports/{sport}/{league}/summary"
 
 SPORT_EMOJI = {
     "cricket": "🏏",
@@ -97,12 +98,72 @@ async def get_event(sport, league, event_id):
     """Fetch the latest state of one event, or None if it's no longer on the scoreboard."""
     async with aiohttp.ClientSession() as session:
         header = await _fetch_header(session, {"sport": sport, "league": league})
-    for sport_slug, league_info, event in _events(header):
-        if event["id"] == event_id:
-            event["sport"] = sport_slug
-            event["league_name"] = league_info.get("shortName") or league_info.get("name")
-            return event
+        for sport_slug, league_info, event in _events(header):
+            if event["id"] == event_id:
+                event["sport"] = sport_slug
+                event["league_name"] = league_info.get("shortName") or league_info.get("name")
+                if sport_slug == "cricket" and event.get("status") == "in":
+                    try:
+                        event["cricket_players"] = await _cricket_players(session, league, event_id)
+                    except Exception as e:
+                        # Nice to have; the score still shows without it
+                        print(f"Error fetching cricket players for {event_id}: {e}")
+                return event
     return None
+
+
+def _current_innings_stats(player):
+    """A player's stats for the latest innings they've batted or bowled in, as {name: displayValue}."""
+    periods = sorted(player.get("linescores") or [], key=lambda l: l.get("period", 0))
+    if not periods:
+        return {}
+    stats = {}
+    for line in periods[-1].get("linescores", []):
+        for category in line.get("statistics", {}).get("categories", []):
+            for stat in category.get("stats", []):
+                stats[stat["name"]] = stat.get("displayValue")
+    return stats
+
+
+async def _cricket_players(session, league, event_id):
+    """Who's batting and bowling right now, from ESPN's match summary."""
+    url = SUMMARY_URL.format(sport="cricket", league=league)
+    async with session.get(url, params={"event": event_id}, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+        resp.raise_for_status()
+        summary = await resp.json(content_type=None)
+    players = {}
+    for roster in summary.get("rosters", []):
+        for player in roster.get("roster", []):
+            role = player.get("activeName")
+            if role in ("striker", "non-striker", "current bowler", "previous bowler"):
+                athlete = player.get("athlete", {})
+                players[role] = {
+                    "name": athlete.get("displayName") or athlete.get("name"),
+                    "stats": _current_innings_stats(player),
+                }
+    return players
+
+
+def _batter(player, on_strike):
+    s = player["stats"]
+    return f"{player['name']}{'*' if on_strike else ''} {s.get('runs', 0)} ({s.get('ballsFaced', 0)})"
+
+
+def _bowler(player):
+    s = player["stats"]
+    # Cricket's usual overs-maidens-runs-wickets
+    return f"{player['name']} {s.get('overs', 0)}-{s.get('maidens', 0)}-{s.get('conceded', 0)}-{s.get('wickets', 0)}"
+
+
+def _cricket_lines(players):
+    lines = []
+    batters = [_batter(players[r], r == "striker") for r in ("striker", "non-striker") if r in players]
+    if batters:
+        lines.append("🏏 " + " · ".join(batters))
+    bowlers = [_bowler(players[r]) for r in ("current bowler", "previous bowler") if r in players]
+    if bowlers:
+        lines.append("🔴 " + " · ".join(bowlers))
+    return lines
 
 
 def is_final(event):
@@ -174,6 +235,10 @@ def format_score(event, flags=None, next_poll=None):
     # Away team first, matching "Away at Home" naming
     competitors = sorted(event["competitors"], key=lambda c: c.get("homeAway") != "away")
     lines += [_team_line(c, flags or {}) for c in competitors]
+
+    players = _cricket_lines(event.get("cricket_players") or {})
+    if players:
+        lines += [""] + players
 
     full_status = event.get("fullStatus") or {}
     note = full_status.get("longSummary") or event.get("seriesSummary")
